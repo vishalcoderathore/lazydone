@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -14,6 +15,7 @@ const (
 	minHeight     = 12
 	detailsHeight = 5 // height of the bottom panel, including its border
 	footerHeight  = 1
+	detailsRows   = detailsHeight - 2 // lines of text that fit in the bottom panel
 )
 
 // column describes how a column of the board looks.
@@ -45,6 +47,7 @@ var (
 	selectedStyle = lipgloss.NewStyle().Foreground(colorText).Background(colorSurface0).Bold(true)
 	faintStyle    = lipgloss.NewStyle().Foreground(colorOverlay)
 	hintStyle     = lipgloss.NewStyle().Foreground(colorBlue)
+	statusStyle   = lipgloss.NewStyle().Foreground(colorTeal).Bold(true)
 	errorStyle    = lipgloss.NewStyle().Foreground(colorRed).Bold(true)
 )
 
@@ -110,6 +113,9 @@ func (m model) View() string {
 	if m.splash {
 		return m.viewSplash()
 	}
+	if m.help {
+		return m.viewHelp()
+	}
 
 	view := lipgloss.JoinVertical(lipgloss.Left, m.viewColumns(), m.withProgress(m.viewDetails()), m.viewFooter())
 	return overlayParticles(view, m.particles, m.width)
@@ -152,10 +158,13 @@ func (m model) viewColumn(index, width, height int) string {
 		lines = append(lines, faintStyle.Render("  No tasks"))
 	}
 	for i := first; i < last; i++ {
-		lines = append(lines, viewTask(col, tasks[i], i == cursor, active, width-2))
+		lines = append(lines, viewTask(col, priorityMarkers[tasks[i].Priority]+tasks[i].Text, i == cursor, active, width-2))
 	}
 	return panel(title, position, lines, width, height, active, col.border)
 }
+
+// priorityMarkers are shown in front of a task's text.
+var priorityMarkers = map[string]string{"low": "! ", "medium": "!! ", "high": "!!! "}
 
 func viewTask(col column, task string, selected, active bool, width int) string {
 	marker := "  "
@@ -176,14 +185,14 @@ func viewTask(col column, task string, selected, active bool, width int) string 
 // viewDetails draws the bottom panel. It shows the full text of the selected
 // task, which may be cut off in its column, or the input for a new task.
 func (m model) viewDetails() string {
-	width := m.width - 2
-	rows := detailsHeight - 2
 	border := columns[m.active].border
 
 	if m.adding {
-		lines := strings.Split(ansi.Wrap(m.input+"█", width, ""), "\n")
-		lines = lines[max(0, len(lines)-rows):] // keep the end of the text in view
-		return panel("[4] 📝 New Task", "", styled(lines), m.width, detailsHeight, true, inputBorder)
+		title := "[4] 📝 New Task"
+		if m.editing {
+			title = "[4] 📝 Edit Task"
+		}
+		return panel(title, "", []string{m.input.View()}, m.width, detailsHeight, true, inputBorder)
 	}
 
 	// Right after adding, the new task would be selected and shown here, which
@@ -192,14 +201,31 @@ func (m model) viewDetails() string {
 		return panel("[4] 🔍 Details", "", nil, m.width, detailsHeight, false, border)
 	}
 
-	var lines []string
-	if tasks := m.tasks[m.active]; len(tasks) > 0 {
-		lines = strings.Split(ansi.Wrap(tasks[m.cursors[m.active]], width, ""), "\n")
-		lines = styled(lines[:min(len(lines), rows)])
-	} else {
-		lines = []string{faintStyle.Render("Nothing selected")}
+	lines := m.detailsLines()
+	title := "[4] 🔍 Details"
+	if len(lines) == 0 {
+		return panel(title, "", []string{faintStyle.Render("Nothing selected")}, m.width, detailsHeight, false, border)
 	}
-	return panel("[4] 🔍 Details", "", lines, m.width, detailsHeight, false, border)
+	last := min(m.scroll+detailsRows, len(lines))
+	if len(lines) > detailsRows {
+		title += fmt.Sprintf(" %d-%d of %d", m.scroll+1, last, len(lines))
+	}
+	return panel(title, "", styled(slices.Clone(lines[m.scroll:last])), m.width, detailsHeight, false, border)
+}
+
+// detailsLines is everything that the details panel has to show about the
+// selected task, wrapped to fit. It's empty if no task is selected.
+func (m model) detailsLines() []string {
+	tasks := m.tasks[m.active]
+	if len(tasks) == 0 {
+		return nil
+	}
+	selected := tasks[m.cursors[m.active]]
+	lines := strings.Split(ansi.Wrap(selected.Text, m.width-2, ""), "\n")
+	if selected.Priority != "" {
+		lines = append([]string{"Priority: " + selected.Priority}, lines...)
+	}
+	return lines
 }
 
 // styled gives each line the normal text color.
@@ -211,14 +237,46 @@ func styled(lines []string) []string {
 }
 
 func (m model) viewFooter() string {
-	if m.err != nil {
-		return errorStyle.Render(ansi.Truncate("Could not save: "+m.err.Error(), m.width, "…"))
+	warning := m.err != nil && m.pending == keys.Quit.Keys()[0]
+	if m.err != nil && !warning {
+		return errorStyle.Render(ansi.Truncate("Could not save (r: retry): "+m.err.Error(), m.width, "…"))
 	}
-	hints := "←/→: column | ↑/↓: task | a: add | d: delete | space: next | H/L: move | q: quit"
-	if m.adding {
-		hints = "enter: save | esc: cancel"
+	if m.status != "" {
+		return statusStyle.Render(ansi.Truncate(m.status, m.width, "…"))
+	}
+	hints := "enter: save | esc: cancel"
+	if !m.adding {
+		var parts []string
+		for _, binding := range footerBindings() {
+			parts = append(parts, binding.Help().Key+": "+binding.Help().Desc)
+		}
+		hints = strings.Join(parts, " | ")
 	}
 	return hintStyle.Render(ansi.Truncate(hints, m.width, "…"))
+}
+
+const helpLabelWidth = 10
+
+// helpRows is how many keybindings the help popup shows at once.
+func (m model) helpRows() int {
+	return min(len(helpBindings()), m.height-2)
+}
+
+// viewHelp draws the help popup, listing keybindings from the keymap.
+func (m model) viewHelp() string {
+	bindings := helpBindings()
+	rows := m.helpRows()
+	var lines []string
+	for _, binding := range bindings[m.helpScroll : m.helpScroll+rows] {
+		label := lipgloss.NewStyle().Width(helpLabelWidth).Render(binding.Help().Key)
+		lines = append(lines, " "+hintStyle.Render(label)+textStyle.Render(binding.Help().Desc))
+	}
+	note := ""
+	if rows < len(bindings) {
+		note = fmt.Sprintf("%d-%d of %d", m.helpScroll+1, m.helpScroll+rows, len(bindings))
+	}
+	popup := panel("Keybindings", note, lines, min(m.width, 44), rows+2, true, inputBorder)
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, popup)
 }
 
 // panel draws a box with rounded corners, a title in its top border and a

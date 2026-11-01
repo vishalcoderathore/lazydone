@@ -109,9 +109,8 @@ func (m model) celebrate() model {
 		return m
 	}
 	columnWidth := m.width - (m.width/numColumns)*(numColumns-1)
-	rows := m.height - detailsHeight - footerHeight - 2
 	x := m.width - columnWidth/2
-	y := 1 + min(m.cursors[completed], max(rows-1, 0))
+	y := 1 + min(m.cursors[completed], max(m.columnRows()-1, 0))
 	m.particles = append(slices.Clone(m.particles), newBurst(float64(x), float64(y))...)
 	return m
 }

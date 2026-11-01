@@ -9,7 +9,7 @@ import (
 	"github.com/muesli/termenv"
 )
 
-func animated(t *testing.T, tasks board) model {
+func animated(t *testing.T, tasks texts) model {
 	t.Helper()
 	return sized(testModel(t, tasks).withAnimations(), 80, 24)
 }
@@ -43,7 +43,7 @@ func assertFillsScreen(t *testing.T, m model) {
 }
 
 func TestEffectsAreOffByDefault(t *testing.T) {
-	m := sized(testModel(t, board{inProgress: {"task"}}), 80, 24)
+	m := sized(testModel(t, texts{inProgress: {"task"}}), 80, 24)
 	if m.Init() != nil {
 		t.Error("a plain model should not schedule frames")
 	}
@@ -56,7 +56,7 @@ func TestEffectsAreOffByDefault(t *testing.T) {
 }
 
 func TestSplashStaysUntilDismissed(t *testing.T) {
-	m := animated(t, board{toDo: {"keep me"}})
+	m := animated(t, texts{toDo: {"keep me"}})
 	if m.Init() == nil {
 		t.Error("the reveal should schedule frames")
 	}
@@ -81,29 +81,29 @@ func TestSplashStaysUntilDismissed(t *testing.T) {
 func TestSpaceAndEnterDismissSplashWithoutActing(t *testing.T) {
 	for name, key := range map[string]any{"space": " ", "enter": tea.KeyEnter} {
 		t.Run(name, func(t *testing.T) {
-			m := animated(t, board{toDo: {"keep me"}})
+			m := animated(t, texts{toDo: {"keep me"}})
 			m = press(t, m, key)
 
 			assertViewOmits(t, m, logo[0])
 			assertViewContains(t, m, "To Do")
-			assertBoardsEqual(t, m.tasks, board{toDo: {"keep me"}})
+			assertBoardsEqual(t, m.tasks, texts{toDo: {"keep me"}})
 		})
 	}
 }
 
 func TestOtherKeysDoNotDismissSplash(t *testing.T) {
-	m := finishReveal(t, animated(t, board{toDo: {"keep me"}}))
+	m := finishReveal(t, animated(t, texts{toDo: {"keep me"}}))
 	m = press(t, m, "dLa", tea.KeyEsc, tea.KeyTab)
 
 	assertViewContains(t, m, logo[0])
-	assertBoardsEqual(t, m.tasks, board{toDo: {"keep me"}})
+	assertBoardsEqual(t, m.tasks, texts{toDo: {"keep me"}})
 	if m.adding {
 		t.Error("keys should not act behind the logo")
 	}
 }
 
 func TestDismissingDuringRevealStopsFrames(t *testing.T) {
-	m := press(t, animated(t, board{}), tea.KeyEnter)
+	m := press(t, animated(t, texts{}), tea.KeyEnter)
 	m, cmd := update(m, animTick{})
 	if cmd != nil || m.ticking {
 		t.Error("frames should stop once the logo is dismissed")
@@ -111,7 +111,7 @@ func TestDismissingDuringRevealStopsFrames(t *testing.T) {
 }
 
 func TestQQuitsDuringSplash(t *testing.T) {
-	_, cmd := update(animated(t, board{}), tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	_, cmd := update(animated(t, texts{}), tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
 	if cmd == nil {
 		t.Fatal("q should quit")
 	}
@@ -129,7 +129,7 @@ func finishReveal(t *testing.T, m model) model {
 }
 
 func TestCtrlCQuitsDuringSplash(t *testing.T) {
-	_, cmd := update(animated(t, board{}), tea.KeyMsg{Type: tea.KeyCtrlC})
+	_, cmd := update(animated(t, texts{}), tea.KeyMsg{Type: tea.KeyCtrlC})
 	if cmd == nil {
 		t.Fatal("ctrl+c should quit")
 	}
@@ -139,7 +139,7 @@ func TestCtrlCQuitsDuringSplash(t *testing.T) {
 }
 
 func TestSplashFitsNarrowTerminal(t *testing.T) {
-	m := sized(testModel(t, board{}).withAnimations(), minWidth, minHeight)
+	m := sized(testModel(t, texts{}).withAnimations(), minWidth, minHeight)
 	assertFillsScreen(t, m)
 	assertViewContains(t, m, "lazydone")
 }
@@ -147,7 +147,7 @@ func TestSplashFitsNarrowTerminal(t *testing.T) {
 func TestCompletingATaskStartsConfetti(t *testing.T) {
 	for name, keys := range map[string]string{"space": " ", "shift move": "L"} {
 		t.Run(name, func(t *testing.T) {
-			m := finishSplash(t, animated(t, board{inProgress: {"task"}}))
+			m := finishSplash(t, animated(t, texts{inProgress: {"task"}}))
 			m = press(t, m, "2")
 
 			var key tea.KeyMsg
@@ -168,7 +168,7 @@ func TestCompletingATaskStartsConfetti(t *testing.T) {
 }
 
 func TestOtherMovesDoNotStartConfetti(t *testing.T) {
-	m := finishSplash(t, animated(t, board{toDo: {"a"}, completed: {"b"}}))
+	m := finishSplash(t, animated(t, texts{toDo: {"a"}, completed: {"b"}}))
 
 	m, _ = update(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'L'}}) // To Do to In Progress
 	if len(m.particles) != 0 {
@@ -183,7 +183,7 @@ func TestOtherMovesDoNotStartConfetti(t *testing.T) {
 }
 
 func TestConfettiEndsAndStopsFrames(t *testing.T) {
-	m := finishSplash(t, animated(t, board{inProgress: {"task"}}))
+	m := finishSplash(t, animated(t, texts{inProgress: {"task"}}))
 	m = press(t, m, "2", "L")
 
 	var cmd tea.Cmd
@@ -207,7 +207,7 @@ func TestConfettiEndsAndStopsFrames(t *testing.T) {
 }
 
 func TestSecondBurstDoesNotStartSecondTimer(t *testing.T) {
-	m := finishSplash(t, animated(t, board{inProgress: {"a", "b"}}))
+	m := finishSplash(t, animated(t, texts{inProgress: {"a", "b"}}))
 	m = press(t, m, "2")
 
 	m, first := update(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'L'}})
@@ -227,7 +227,7 @@ func TestSecondBurstDoesNotStartSecondTimer(t *testing.T) {
 
 func TestConfettiKeepsLayoutOnEveryFrame(t *testing.T) {
 	useColors(t)
-	tasks := board{
+	tasks := texts{
 		toDo:       {"日本語の長いタスクがここにあります、とても長いタスクです", "🚀 emoji task"},
 		inProgress: {"finish this 🎉 日本語", "second"},
 		completed:  {"done 🎉"},
@@ -247,7 +247,7 @@ func TestConfettiKeepsLayoutOnEveryFrame(t *testing.T) {
 }
 
 func TestConfettiAppearsOnScreen(t *testing.T) {
-	m := finishSplash(t, animated(t, board{inProgress: {"task"}}))
+	m := finishSplash(t, animated(t, texts{inProgress: {"task"}}))
 	plain := m.View()
 	m = press(t, m, "2", "L")
 	m = send(m, animTick{})
@@ -268,7 +268,7 @@ func TestConfettiAppearsOnScreen(t *testing.T) {
 
 func TestBordersUseADifferentGradientPerColumn(t *testing.T) {
 	useColors(t)
-	m := sized(testModel(t, board{}), 80, 24)
+	m := sized(testModel(t, texts{}), 80, 24)
 	view := m.View()
 
 	for name, g := range map[string]gradient{"To Do": columns[toDo].border, "In Progress": columns[inProgress].border.dimmed(), "Completed": columns[completed].border.dimmed()} {
@@ -297,7 +297,7 @@ func useColors(t *testing.T) {
 }
 
 func TestProgressShowsCountAtBottomRight(t *testing.T) {
-	m := sized(testModel(t, board{toDo: {"a", "b"}, completed: {"c"}}), 80, 24)
+	m := sized(testModel(t, texts{toDo: {"a", "b"}, completed: {"c"}}), 80, 24)
 
 	lines := strings.Split(m.View(), "\n")
 	border := lines[len(lines)-2]
@@ -307,11 +307,11 @@ func TestProgressShowsCountAtBottomRight(t *testing.T) {
 }
 
 func TestProgressHiddenOnEmptyBoard(t *testing.T) {
-	assertViewOmits(t, sized(testModel(t, board{}), 80, 24), " done ")
+	assertViewOmits(t, sized(testModel(t, texts{}), 80, 24), "0/0")
 }
 
 func TestProgressCountFollowsBoard(t *testing.T) {
-	m := sized(testModel(t, board{inProgress: {"a", "b"}}), 80, 24)
+	m := sized(testModel(t, texts{inProgress: {"a", "b"}}), 80, 24)
 	assertViewContains(t, m, "0/2 done")
 
 	m = press(t, m, "2", "L")
@@ -322,7 +322,7 @@ func TestProgressCountFollowsBoard(t *testing.T) {
 }
 
 func TestProgressBarFillsAsBoardOpens(t *testing.T) {
-	m := finishReveal(t, animated(t, board{completed: {"a"}}))
+	m := finishReveal(t, animated(t, texts{completed: {"a"}}))
 	if m.bar != 0 {
 		t.Errorf("the bar should wait behind the logo, got %v", m.bar)
 	}
@@ -336,7 +336,7 @@ func TestProgressBarFillsAsBoardOpens(t *testing.T) {
 
 func TestProgressBarEasesBothWays(t *testing.T) {
 	useColors(t)
-	m := finishSplash(t, animated(t, board{inProgress: {"a"}, completed: {"b"}}))
+	m := finishSplash(t, animated(t, texts{inProgress: {"a"}, completed: {"b"}}))
 	m = assertBarReaches(t, m, 0.5)
 
 	m = press(t, m, "2", "L")
@@ -385,6 +385,6 @@ func assertBarReaches(t *testing.T, m model, want float64) model {
 
 func TestProgressFitsSmallestTerminal(t *testing.T) {
 	useColors(t)
-	m := sized(testModel(t, board{toDo: {"日本語の長いタスク"}, completed: {"🎉 done"}}), minWidth, minHeight)
+	m := sized(testModel(t, texts{toDo: {"日本語の長いタスク"}, completed: {"🎉 done"}}), minWidth, minHeight)
 	assertFillsScreen(t, m)
 }
