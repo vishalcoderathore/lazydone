@@ -46,6 +46,6 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
-	_, err = tea.NewProgram(newModel(todoFile, tasks), tea.WithAltScreen()).Run()
+	_, err = tea.NewProgram(newModel(todoFile, tasks).withAnimations(), tea.WithAltScreen()).Run()
 	return err
 }

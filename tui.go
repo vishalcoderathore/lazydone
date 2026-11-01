@@ -18,6 +18,13 @@ type model struct {
 	err     error           // last save error, shown on screen
 	width   int             // terminal width
 	height  int             // terminal height
+
+	animate     bool       // whether effects are switched on
+	ticking     bool       // true while animation frames are scheduled
+	splash      bool       // true until the startup logo is dismissed
+	splashFrame int        // how far the logo has been revealed
+	particles   []particle // confetti currently on screen
+	bar         float64    // share of the progress bar currently filled
 }
 
 func newModel(path string, tasks board) model {
@@ -25,6 +32,9 @@ func newModel(path string, tasks board) model {
 }
 
 func (m model) Init() tea.Cmd {
+	if m.ticking {
+		return tick()
+	}
 	return nil
 }
 
@@ -33,12 +43,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+	case animTick:
+		return m.stepAnimation()
 	case tea.KeyMsg:
 		if msg.Type == tea.KeyCtrlC {
 			return m, tea.Quit
 		}
+		if m.splash {
+			return m.updateSplash(msg)
+		}
 		if m.adding {
-			return m.updateAdding(msg), nil
+			return m.updateAdding(msg).startAnimation()
 		}
 		return m.updateBoard(msg)
 	}
@@ -81,7 +96,7 @@ func (m model) updateBoard(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "shift+right", "L":
 		m = m.moveSelected(m.active + 1)
 	}
-	return m, nil
+	return m.startAnimation()
 }
 
 // updateAdding handles keys while typing a new task.
@@ -134,10 +149,14 @@ func (m model) moveSelected(target int) model {
 		return m
 	}
 	task := m.tasks[m.active][m.cursors[m.active]]
+	finished := target == completed && m.active != completed
 	m = m.removeSelected()
 	m.tasks[target] = append(m.tasks[target], task)
 	m.active = target
 	m.cursors[target] = len(m.tasks[target]) - 1
+	if finished {
+		m = m.celebrate()
+	}
 	return m.save()
 }
 
