@@ -86,9 +86,38 @@ While typing a task, press `Enter` to save or `Esc` to cancel.
 
 If a save has failed, `q` warns you once before quitting. `Ctrl-C` always quits immediately.
 
+## Command line
+
+Add and check tasks without opening the app. These work while the app is open in another terminal, and the app shows the change within a second.
+
+```sh
+lazydone add fix bug +work @home due:05-11-2026
+lazydone ls
+lazydone count --todo
+```
+
+- `add` puts a task in To Do. A word starting with `+` or `@` followed by a letter becomes a tag, and `due:DD-MM-YYYY` sets a due date. Both are taken out of the task's text.
+- `ls` lists tasks, one per line, in the same form `add` accepts. Add `--json` for output to use in scripts.
+- `count` prints only the number of tasks, for a tmux status line or a shell prompt.
+- `--todo`, `--doing` and `--done` limit `ls` and `count` to those columns. With none of them, every column is included.
+
+Archived tasks are left out of `ls` and `count`.
+
+### Shell completion
+
+Tab completion for commands and flags:
+
+```sh
+lazydone completion bash > ~/.local/share/bash-completion/completions/lazydone
+lazydone completion zsh > "${fpath[1]}/_lazydone"
+lazydone completion fish > ~/.config/fish/completions/lazydone.fish
+```
+
+Then open a new terminal. Run `lazydone completion <shell> --help` for other ways to load it.
+
 ## Things to know
 
 - Tasks are saved to `$XDG_DATA_HOME/lazydone/tasks.json`, or `~/.local/share/lazydone/tasks.json` if that isn't set, so you see the same board from every folder.
 - Use `lazydone --file path/to/tasks.json` to keep a separate list.
 - The 5 most recent backups sit beside the data file as `tasks.json.bak.1` to `.bak.5`, with at most one made per hour.
-- Don't run two copies on one file at the same time, because the last one to save overwrites the other's changes.
+- Several copies of the app and the command line can use one file at the same time. Each change is applied to the latest saved tasks, so none overwrites another. A `tasks.json.lock` file beside the data file makes this work, and is safe to leave in place.

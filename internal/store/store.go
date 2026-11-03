@@ -1,7 +1,10 @@
-package main
+// Package store loads and saves the board, in a versioned JSON file that is
+// written safely and backed up.
+package store
 
 import (
-	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,40 +12,11 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
-	"unicode"
+
+	"github.com/vishalcoderathore/lazydone/internal/board"
 )
-
-// The columns of the board, from left to right.
-const (
-	toDo = iota
-	inProgress
-	completed
-	numColumns
-)
-
-// task is one item on the board. Its status is the column that holds it, and a
-// task's place in that column is its manual order.
-type task struct {
-	ID        string    `json:"id"`
-	Text      string    `json:"text"`
-	Priority  string    `json:"priority,omitempty"`
-	Due       time.Time `json:"due,omitzero"`
-	Tags      []string  `json:"tags,omitempty"`
-	Notes     string    `json:"notes,omitempty"`
-	Archived  bool      `json:"archived,omitempty"`
-	Created   time.Time `json:"created,omitzero"`
-	Updated   time.Time `json:"updated,omitzero"`
-	Completed time.Time `json:"completed,omitzero"`
-}
-
-// newTask returns a task created at the given time, with a new ID.
-func newTask(text string, now time.Time) task {
-	return task{ID: rand.Text(), Text: text, Created: now, Updated: now}
-}
-
-// board holds the tasks of each column.
-type board [numColumns][]task
 
 // fileVersion is the version of the data file format that this build writes.
 const fileVersion = 1
@@ -52,23 +26,20 @@ const (
 	backupInterval = time.Hour // minimum time between backups
 )
 
-// statusNames are how the columns are written in the data file.
-var statusNames = [numColumns]string{"todo", "doing", "done"}
-
 type dataFile struct {
 	Version int          `json:"version"`
 	Tasks   []storedTask `json:"tasks"`
 }
 
 type storedTask struct {
-	task
+	board.Task
 	Status string `json:"status"`
 }
 
-// dataFilePath returns the data file to use: the override if one was given,
+// Path returns the data file to use: the override if one was given,
 // otherwise tasks.json in the standard data folder. The XDG spec says that a
 // relative XDG_DATA_HOME must be ignored.
-func dataFilePath(override string) (string, error) {
+func Path(override string) (string, error) {
 	if override != "" {
 		return override, nil
 	}
@@ -83,10 +54,79 @@ func dataFilePath(override string) (string, error) {
 	return filepath.Join(dir, "lazydone", "tasks.json"), nil
 }
 
-// loadBoard reads tasks from a data file. A file that does not exist yet simply
+// File is a data file that holds a board. Several processes can share one
+// file safely, as long as every change goes through Update.
+type File struct {
+	Path string
+}
+
+// Update changes the board in the file as one step that no other lazydone
+// process can interleave with. It takes the file lock, reads the latest board,
+// applies the change, writes the result and releases the lock, so that a change
+// never overwrites one made elsewhere. It returns the board as written.
+func (f File) Update(change func(board.Board) board.Board) (board.Board, error) {
+	// Two links to one file must share a lock, so lock the real file.
+	path, err := resolveSymlinks(f.Path)
+	if err != nil {
+		return board.Board{}, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return board.Board{}, err
+	}
+	held, err := lock(path)
+	if err != nil {
+		return board.Board{}, err
+	}
+	defer func() { _ = held.Close() }() // closing releases the lock; it has nothing to report
+
+	tasks, err := File{path}.Load()
+	if err != nil {
+		return board.Board{}, err
+	}
+	tasks = change(tasks)
+	return tasks, save(path, tasks)
+}
+
+// Save replaces the whole board in the file.
+func (f File) Save(tasks board.Board) error {
+	_, err := f.Update(func(board.Board) board.Board { return tasks })
+	return err
+}
+
+// ModTime returns when the file last changed, or the zero time if it doesn't
+// exist yet. Watching it shows when another process has changed the board.
+func (f File) ModTime() (time.Time, error) {
+	info, err := os.Stat(f.Path)
+	if errors.Is(err, os.ErrNotExist) {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	return info.ModTime(), nil
+}
+
+// lock waits for, then takes, an exclusive lock on path.lock. The lock is
+// released when the returned file is closed or the process ends, so a crash
+// can't leave it held. The lock file is left in place, because removing it
+// would let two processes lock two different files of the same name.
+func lock(path string) (*os.File, error) {
+	file, err := os.OpenFile(path+".lock", os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
+		_ = file.Close() // the lock error is the one to report
+		return nil, err
+	}
+	return file, nil
+}
+
+// Load reads the board from the file. A file that does not exist yet simply
 // means an empty board.
-func loadBoard(path string) (board, error) {
-	var tasks board
+func (f File) Load() (board.Board, error) {
+	var tasks board.Board
+	path := f.Path
 
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -104,33 +144,37 @@ func loadBoard(path string) (board, error) {
 		return tasks, fmt.Errorf("%s was written by a newer version of lazydone, so update lazydone to open it", path)
 	}
 	for _, stored := range file.Tasks {
-		column := slices.Index(statusNames[:], stored.Status)
+		column := slices.Index(board.Statuses[:], stored.Status)
 		if column < 0 {
-			return board{}, fmt.Errorf("%s has a task with unknown status %q", path, stored.Status)
+			return board.Board{}, fmt.Errorf("%s has a task with unknown status %q", path, stored.Status)
 		}
-		tasks[column] = append(tasks[column], stored.task)
+		if stored.ID == "" {
+			stored.ID = stableID(stored.Status, len(tasks[column]), stored.Text)
+		}
+		tasks[column] = append(tasks[column], stored.Task)
 	}
 	return tasks, nil
 }
 
-// saveBoard writes all tasks to a data file. A symlink is followed, because
-// renaming over it would replace the link and leave its target out of date.
-func saveBoard(path string, tasks board) error {
-	path, err := resolveSymlinks(path)
-	if err != nil {
-		return err
-	}
+// stableID gives a task from a hand-edited file, which has no ID, one that is
+// the same on every load. Changes find tasks by ID, so every process that reads
+// the file must agree on it until the next save writes it down.
+func stableID(status string, index int, text string) string {
+	sum := sha256.Sum256(fmt.Appendf(nil, "%s\x00%d\x00%s", status, index, text))
+	return "file-" + hex.EncodeToString(sum[:8])
+}
+
+// save writes all tasks to the real file behind any symlinks, safely, backing
+// up what it replaces. The caller holds the lock.
+func save(path string, tasks board.Board) error {
 	file := dataFile{Version: fileVersion, Tasks: []storedTask{}}
 	for column, list := range tasks {
 		for _, item := range list {
-			file.Tasks = append(file.Tasks, storedTask{item, statusNames[column]})
+			file.Tasks = append(file.Tasks, storedTask{item, board.Statuses[column]})
 		}
 	}
 	data, err := json.MarshalIndent(file, "", "  ")
 	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	if err := backUp(path); err != nil {
@@ -220,17 +264,17 @@ func writeFileAtomic(path string, data []byte) (err error) {
 }
 
 // legacyTags mark which column a task belongs to in the old text format.
-var legacyTags = [numColumns]string{"[todo]", "[doing]", "[done]"}
+var legacyTags = [board.NumColumns]string{"[todo]", "[doing]", "[done]"}
 
-// readLegacyBoard reads the old text format, which holds one task per line:
+// ReadLegacy reads the old text format, which holds one task per line:
 //
 //	[todo] buy milk
 //	[doing] call the bank
 //	[done] walk the dog
 //
 // A line without a tag goes to To Do, so plain lists keep working.
-func readLegacyBoard(path string) (board, error) {
-	var tasks board
+func ReadLegacy(path string) (board.Board, error) {
+	var tasks board.Board
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -239,8 +283,8 @@ func readLegacyBoard(path string) (board, error) {
 
 	for _, line := range strings.Split(string(data), "\n") {
 		column, text := parseLegacyLine(line)
-		if text = cleanText(text); text != "" {
-			tasks[column] = append(tasks[column], task{Text: text})
+		if text = board.CleanText(text); text != "" {
+			tasks[column] = append(tasks[column], board.Task{Text: text})
 		}
 	}
 	return tasks, nil
@@ -252,13 +296,5 @@ func parseLegacyLine(line string) (column int, text string) {
 			return column, rest
 		}
 	}
-	return toDo, line
-}
-
-// cleanText trims a task and collapses its whitespace, so that a task always
-// fits on one line on screen.
-func cleanText(text string) string {
-	return strings.Join(strings.FieldsFunc(text, func(r rune) bool {
-		return unicode.IsSpace(r) || unicode.IsControl(r)
-	}), " ")
+	return board.ToDo, line
 }

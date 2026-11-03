@@ -1,15 +1,16 @@
-package main
+package tui
 
 import (
-	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/vishalcoderathore/lazydone/internal/board"
+	"github.com/vishalcoderathore/lazydone/internal/store"
 )
 
 // sized gives the model a terminal size, as Bubble Tea does on startup.
@@ -33,8 +34,8 @@ func assertViewOmits(t *testing.T, m model, unwanted string) {
 
 func TestViewFillsTerminalExactly(t *testing.T) {
 	tasks := texts{
-		toDo:       {"plain", "日本語の長いタスクがここにあります、とても長いタスクです", "🚀 emoji task"},
-		inProgress: {strings.Repeat("a very long task ", 20)},
+		board.ToDo:       {"plain", "日本語の長いタスクがここにあります、とても長いタスクです", "🚀 emoji task"},
+		board.InProgress: {strings.Repeat("a very long task ", 20)},
 	}
 
 	for _, size := range [][2]int{{60, 12}, {61, 13}, {80, 24}, {121, 40}} {
@@ -74,7 +75,7 @@ func TestBottomPanelIsNumberFour(t *testing.T) {
 }
 
 func TestViewMarksSelectedTaskInActiveColumnOnly(t *testing.T) {
-	m := sized(testModel(t, texts{toDo: {"one", "two"}, inProgress: {"three"}}), 100, 24)
+	m := sized(testModel(t, texts{board.ToDo: {"one", "two"}, board.InProgress: {"three"}}), 100, 24)
 	m = press(t, m, tea.KeyDown)
 
 	assertViewContains(t, m, "❯ ○ two")
@@ -83,7 +84,7 @@ func TestViewMarksSelectedTaskInActiveColumnOnly(t *testing.T) {
 }
 
 func TestViewShowsPositionInColumn(t *testing.T) {
-	m := sized(testModel(t, texts{toDo: {"one", "two", "three"}}), 100, 24)
+	m := sized(testModel(t, texts{board.ToDo: {"one", "two", "three"}}), 100, 24)
 	m = press(t, m, tea.KeyDown)
 
 	assertViewContains(t, m, "2 of 3")
@@ -94,7 +95,7 @@ func TestViewScrollsToKeepSelectionVisible(t *testing.T) {
 	for i := range 50 {
 		tasks = append(tasks, fmt.Sprintf("task-%02d", i))
 	}
-	m := sized(testModel(t, texts{toDo: tasks}), 100, 15)
+	m := sized(testModel(t, texts{board.ToDo: tasks}), 100, 15)
 
 	assertViewContains(t, m, "task-00")
 	assertViewOmits(t, m, "task-49")
@@ -109,7 +110,7 @@ func TestViewScrollsToKeepSelectionVisible(t *testing.T) {
 
 func TestDetailsShowsFullTextOfCutOffTask(t *testing.T) {
 	task := "this long task does not fit in a column but the ending-word is visible below"
-	m := sized(testModel(t, texts{toDo: {task}}), 80, 24)
+	m := sized(testModel(t, texts{board.ToDo: {task}}), 80, 24)
 
 	lines := strings.Split(m.View(), "\n")
 	column := strings.Join(lines[:len(lines)-6], "\n")
@@ -120,7 +121,7 @@ func TestDetailsShowsFullTextOfCutOffTask(t *testing.T) {
 }
 
 func TestDetailsFollowsActiveColumn(t *testing.T) {
-	m := sized(testModel(t, texts{toDo: {"one"}}), 100, 24)
+	m := sized(testModel(t, texts{board.ToDo: {"one"}}), 100, 24)
 	assertViewOmits(t, m, "Nothing selected")
 
 	m = press(t, m, "2")
@@ -158,7 +159,7 @@ func TestBottomPanelIsBlankAfterAddingTask(t *testing.T) {
 }
 
 func TestDetailsComeBackOnNextKeyAfterAdding(t *testing.T) {
-	m := sized(testModel(t, texts{toDo: {"one"}}), 100, 24)
+	m := sized(testModel(t, texts{board.ToDo: {"one"}}), 100, 24)
 	m = press(t, m, "a", "two", tea.KeyEnter, tea.KeyUp)
 
 	if !strings.Contains(bottomPanel(m), "one") {
@@ -167,7 +168,7 @@ func TestDetailsComeBackOnNextKeyAfterAdding(t *testing.T) {
 }
 
 func TestBlankEnterKeepsDetails(t *testing.T) {
-	m := sized(testModel(t, texts{toDo: {"one"}}), 100, 24)
+	m := sized(testModel(t, texts{board.ToDo: {"one"}}), 100, 24)
 	m = press(t, m, "a", tea.KeyEnter)
 
 	if !strings.Contains(bottomPanel(m), "one") {
@@ -184,7 +185,7 @@ func TestLongInputKeepsEndVisible(t *testing.T) {
 
 func TestSaveFailureIsShown(t *testing.T) {
 	m := sized(testModel(t, texts{}), 100, 24)
-	m.path = t.TempDir() // a directory can't be written to as a file
+	m.store = store.File{Path: t.TempDir()} // a directory can't be written to as a file
 
 	m = press(t, m, "a", "one", tea.KeyEnter)
 
@@ -231,7 +232,7 @@ func TestActionsShowAStatusUntilTheNextKey(t *testing.T) {
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
-			m := sized(testModel(t, texts{toDo: {"one", "two"}}), 100, 24)
+			m := sized(testModel(t, texts{board.ToDo: {"one", "two"}}), 100, 24)
 
 			m = press(t, m, c.keys...)
 			assertViewContains(t, m, c.want)
@@ -243,8 +244,8 @@ func TestActionsShowAStatusUntilTheNextKey(t *testing.T) {
 }
 
 func TestSaveErrorIsNotHiddenByStatus(t *testing.T) {
-	m := sized(testModel(t, texts{toDo: {"one"}}), 100, 24)
-	m.path = t.TempDir() // a directory can't be written to as a file
+	m := sized(testModel(t, texts{board.ToDo: {"one"}}), 100, 24)
+	m.store = store.File{Path: t.TempDir()} // a directory can't be written to as a file
 
 	m = press(t, m, "dd")
 
@@ -261,7 +262,7 @@ func longTask() string {
 }
 
 func TestDetailsScrollThroughLongTask(t *testing.T) {
-	m := sized(testModel(t, texts{toDo: {longTask()}}), 60, 24)
+	m := sized(testModel(t, texts{board.ToDo: {longTask()}}), 60, 24)
 	assertViewOmits(t, m, "word79")
 	assertViewContains(t, m, "Details 1-3 of")
 
@@ -289,7 +290,7 @@ func assertDetailsContain(t *testing.T, m model, want string) {
 }
 
 func TestDetailsDoNotScrollPastTheEnd(t *testing.T) {
-	m := sized(testModel(t, texts{toDo: {longTask()}}), 60, 24)
+	m := sized(testModel(t, texts{board.ToDo: {longTask()}}), 60, 24)
 	for range 50 {
 		m = press(t, m, tea.KeyCtrlE)
 	}
@@ -313,27 +314,27 @@ func assertViewFitsScreen(t *testing.T, m model) {
 }
 
 func TestShortTaskHasNoScrollPosition(t *testing.T) {
-	m := sized(testModel(t, texts{toDo: {"short"}}), 60, 24)
+	m := sized(testModel(t, texts{board.ToDo: {"short"}}), 60, 24)
 
 	assertViewOmits(t, m, "Details 1")
 }
 
 func TestScrollDoesNothingOnShortTask(t *testing.T) {
-	m := sized(testModel(t, texts{toDo: {"short"}}), 60, 24)
+	m := sized(testModel(t, texts{board.ToDo: {"short"}}), 60, 24)
 	m = press(t, m, tea.KeyCtrlE)
 
 	assertDetailsContain(t, m, "short")
 }
 
 func TestSelectingAnotherTaskResetsDetailsScroll(t *testing.T) {
-	m := sized(testModel(t, texts{toDo: {longTask(), longTask()}}), 60, 24)
+	m := sized(testModel(t, texts{board.ToDo: {longTask(), longTask()}}), 60, 24)
 	m = press(t, m, tea.KeyCtrlE, tea.KeyCtrlE, "j")
 
 	assertDetailsContain(t, m, "word0 ")
 }
 
 func TestDetailsIncludePriorityInScrolling(t *testing.T) {
-	m := sized(testModel(t, texts{toDo: {longTask()}}), 60, 24)
+	m := sized(testModel(t, texts{board.ToDo: {longTask()}}), 60, 24)
 	m = press(t, m, "p")
 	assertDetailsContain(t, m, "Priority: low")
 
@@ -344,7 +345,7 @@ func TestDetailsIncludePriorityInScrolling(t *testing.T) {
 }
 
 func TestHelpPopupListsEveryKeybinding(t *testing.T) {
-	m := press(t, sized(testModel(t, texts{toDo: {"one"}}), 100, 40), "?")
+	m := press(t, sized(testModel(t, texts{board.ToDo: {"one"}}), 100, 40), "?")
 
 	for _, want := range []string{
 		"h / ←", "previous column", "l / →", "next column", "1 2 3", "jump to column",
@@ -363,7 +364,7 @@ func TestHelpPopupListsEveryKeybinding(t *testing.T) {
 func TestHelpPopupClosesWithoutActing(t *testing.T) {
 	for name, key := range map[string]any{"question mark": "?", "esc": tea.KeyEsc, "q": "q"} {
 		t.Run(name, func(t *testing.T) {
-			m := press(t, sized(testModel(t, texts{toDo: {"one"}}), 100, 40), "?")
+			m := press(t, sized(testModel(t, texts{board.ToDo: {"one"}}), 100, 40), "?")
 			updated, cmd := m.Update(toKey(key))
 			if cmd != nil {
 				t.Error("closing help should not quit")
@@ -385,9 +386,9 @@ func toKey(key any) tea.KeyMsg {
 }
 
 func TestKeysDoNothingBehindHelpPopup(t *testing.T) {
-	m := press(t, sized(testModel(t, texts{toDo: {"one"}}), 100, 40), "?", "dd", "x", "p")
+	m := press(t, sized(testModel(t, texts{board.ToDo: {"one"}}), 100, 40), "?", "dd", "x", "p")
 
-	assertBoardsEqual(t, m.tasks, texts{toDo: {"one"}})
+	assertBoardsEqual(t, m.tasks, texts{board.ToDo: {"one"}})
 	assertViewContains(t, m, "previous column")
 }
 
@@ -419,7 +420,7 @@ func TestGrowingTerminalKeepsHelpPopupOnScreen(t *testing.T) {
 }
 
 func TestWideningTerminalKeepsDetailsOnScreen(t *testing.T) {
-	m := sized(testModel(t, texts{toDo: {longTask()}}), 60, 24)
+	m := sized(testModel(t, texts{board.ToDo: {longTask()}}), 60, 24)
 	for range 20 {
 		m = press(t, m, tea.KeyCtrlE)
 	}
@@ -438,12 +439,12 @@ func TestFooterHintsFitStandardTerminal(t *testing.T) {
 
 func TestFailedSaveCanBeRetried(t *testing.T) {
 	good := filepath.Join(t.TempDir(), "tasks.json")
-	m := sized(newModel(good, texts{toDo: {"one"}}.board()), 100, 24)
-	m.path = t.TempDir() // a directory can't be written to as a file
+	m := sized(modelAt(t, good, texts{board.ToDo: {"one"}}.Board()), 100, 24)
+	m.store = store.File{Path: t.TempDir()} // a directory can't be written to as a file
 	m = press(t, m, "dd")
 	assertViewContains(t, m, "r: retry")
 
-	m.path = good
+	m.store = store.File{Path: good}
 	m = press(t, m, "r")
 
 	assertViewOmits(t, m, "Could not save")
@@ -452,20 +453,24 @@ func TestFailedSaveCanBeRetried(t *testing.T) {
 }
 
 func TestRetryThatFailsKeepsTheError(t *testing.T) {
-	m := sized(testModel(t, texts{toDo: {"one"}}), 100, 24)
-	m.path = t.TempDir()
+	m := sized(testModel(t, texts{board.ToDo: {"one"}}), 100, 24)
+	m.store = store.File{Path: t.TempDir()}
 	m = press(t, m, "dd", "r")
 
 	assertViewContains(t, m, "Could not save")
 }
 
 func TestRetryDoesNothingWithoutAnError(t *testing.T) {
-	m := sized(testModel(t, texts{toDo: {"one"}}), 100, 24)
+	m := sized(testModel(t, texts{board.ToDo: {"one"}}), 100, 24)
+	before, err := m.store.ModTime()
+	if err != nil {
+		t.Fatal(err)
+	}
 	m = press(t, m, "r")
 
 	assertViewOmits(t, m, "Saved")
-	if _, err := os.Stat(m.path); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("nothing changed, so nothing should be written: %v", err)
+	if after, err := m.store.ModTime(); err != nil || !after.Equal(before) {
+		t.Errorf("nothing changed, so nothing should be written: modified %v, was %v, err %v", after, before, err)
 	}
 }
 
@@ -478,8 +483,8 @@ func isQuit(cmd tea.Cmd) bool {
 }
 
 func TestQuitWarnsAboutUnsavedChangesFirst(t *testing.T) {
-	m := sized(testModel(t, texts{toDo: {"one"}}), 100, 24)
-	m.path = t.TempDir()
+	m := sized(testModel(t, texts{board.ToDo: {"one"}}), 100, 24)
+	m.store = store.File{Path: t.TempDir()}
 	m = press(t, m, "dd")
 
 	updated, cmd := m.Update(toKey("q"))
@@ -494,8 +499,8 @@ func TestQuitWarnsAboutUnsavedChangesFirst(t *testing.T) {
 }
 
 func TestOtherKeyCancelsQuitWarning(t *testing.T) {
-	m := sized(testModel(t, texts{toDo: {"one"}}), 100, 24)
-	m.path = t.TempDir()
+	m := sized(testModel(t, texts{board.ToDo: {"one"}}), 100, 24)
+	m.store = store.File{Path: t.TempDir()}
 	m = press(t, m, "dd", "q", "h")
 
 	if _, cmd := m.Update(toKey("q")); isQuit(cmd) {
@@ -505,10 +510,10 @@ func TestOtherKeyCancelsQuitWarning(t *testing.T) {
 
 func TestQuitsAtOnceAfterSuccessfulRetry(t *testing.T) {
 	good := filepath.Join(t.TempDir(), "tasks.json")
-	m := sized(newModel(good, texts{toDo: {"one"}}.board()), 100, 24)
-	m.path = t.TempDir()
+	m := sized(modelAt(t, good, texts{board.ToDo: {"one"}}.Board()), 100, 24)
+	m.store = store.File{Path: t.TempDir()}
 	m = press(t, m, "dd")
-	m.path = good
+	m.store = store.File{Path: good}
 	m = press(t, m, "r")
 
 	if _, cmd := m.Update(toKey("q")); !isQuit(cmd) {

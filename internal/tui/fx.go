@@ -1,4 +1,4 @@
-package main
+package tui
 
 import (
 	"fmt"
@@ -12,6 +12,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/vishalcoderathore/lazydone/internal/board"
 )
 
 const (
@@ -108,9 +110,9 @@ func (m model) celebrate() model {
 	if !m.animate || m.width == 0 {
 		return m
 	}
-	columnWidth := m.width - (m.width/numColumns)*(numColumns-1)
+	columnWidth := m.width - (m.width/board.NumColumns)*(board.NumColumns-1)
 	x := m.width - columnWidth/2
-	y := 1 + min(m.cursors[completed], max(m.columnRows()-1, 0))
+	y := 1 + min(m.cursors[board.Completed], max(m.columnRows()-1, 0))
 	m.particles = append(slices.Clone(m.particles), newBurst(float64(x), float64(y))...)
 	return m
 }
@@ -204,14 +206,11 @@ func overlayLine(line string, glyphs map[int]string, width int) string {
 
 // doneFraction is the share of all tasks that are completed.
 func (m model) doneFraction() float64 {
-	total := 0
-	for _, list := range m.tasks {
-		total += len(list)
-	}
+	total := m.tasks.Total()
 	if total == 0 {
 		return 0
 	}
-	return float64(len(m.tasks[completed])) / float64(total)
+	return float64(len(m.tasks[board.Completed])) / float64(total)
 }
 
 // barMoving reports whether the progress bar is still catching up with the
@@ -222,10 +221,7 @@ func (m model) barMoving() bool {
 
 // viewProgress draws the progress bar and count, or nothing on an empty board.
 func (m model) viewProgress() string {
-	total := 0
-	for _, list := range m.tasks {
-		total += len(list)
-	}
+	total := m.tasks.Total()
 	if total == 0 {
 		return ""
 	}
@@ -249,7 +245,7 @@ func (m model) viewProgress() string {
 	}
 	bar.WriteString(faintStyle.Render(strings.Repeat("░", barWidth-used)))
 
-	count := fmt.Sprintf("%d/%d done", len(m.tasks[completed]), total)
+	count := fmt.Sprintf("%d/%d done", len(m.tasks[board.Completed]), total)
 	return " " + bar.String() + " " + lipgloss.NewStyle().Foreground(colorTeal).Bold(true).Render(count) + " "
 }
 
@@ -297,6 +293,6 @@ func (m model) viewSplash() string {
 		}
 		content = strings.Join(lines, "\n")
 	}
-	content = lipgloss.JoinVertical(lipgloss.Center, content, "", faintStyle.Render(version), "", hintStyle.Render(splashHint))
+	content = lipgloss.JoinVertical(lipgloss.Center, content, "", faintStyle.Render(m.version), "", hintStyle.Render(splashHint))
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
 }

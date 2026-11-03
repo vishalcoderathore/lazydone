@@ -1,4 +1,4 @@
-package main
+package store
 
 import (
 	"errors"
@@ -8,47 +8,25 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/vishalcoderathore/lazydone/internal/board"
+	"github.com/vishalcoderathore/lazydone/internal/boardtest"
 )
 
-// texts describes a board by the text of its tasks, for tests that don't care
-// about a task's other fields.
-type texts [numColumns][]string
+type texts = boardtest.Texts
 
-func (ts texts) board() board {
-	var b board
-	for column, list := range ts {
-		for _, text := range list {
-			b[column] = append(b[column], task{Text: text})
-		}
-	}
-	return b
-}
+var (
+	assertBoardsEqual = boardtest.AssertEqual
+	readFile          = boardtest.ReadFile
+	writeFile         = boardtest.WriteFile
+)
 
-func writeFile(t *testing.T, content string) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "todos.txt")
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
+func loadBoard(path string) (board.Board, error) { return File{Path: path}.Load() }
 
-func assertBoardsEqual(t *testing.T, got board, want texts) {
-	t.Helper()
-	var gotTexts texts
-	for column, list := range got {
-		for _, item := range list {
-			gotTexts[column] = append(gotTexts[column], item.Text)
-		}
-	}
-	for i := range numColumns {
-		if !slices.Equal(gotTexts[i], want[i]) {
-			t.Fatalf("board = %q, want %q", gotTexts, want)
-		}
-	}
-}
+func saveBoard(path string, tasks board.Board) error { return File{Path: path}.Save(tasks) }
 
 func TestLoadMissingFileReturnsEmptyBoard(t *testing.T) {
 	got, err := loadBoard(filepath.Join(t.TempDir(), "missing.json"))
@@ -61,12 +39,12 @@ func TestLoadMissingFileReturnsEmptyBoard(t *testing.T) {
 func TestSaveThenLoadKeepsEveryColumnInOrder(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tasks.json")
 	want := texts{
-		toDo:       {"buy milk", "日本語"},
-		inProgress: {"call the bank"},
-		completed:  {"walk the dog", "[done] is not finished"},
+		board.ToDo:       {"buy milk", "日本語"},
+		board.InProgress: {"call the bank"},
+		board.Completed:  {"walk the dog", "[done] is not finished"},
 	}
 
-	if err := saveBoard(path, want.board()); err != nil {
+	if err := saveBoard(path, want.Board()); err != nil {
 		t.Fatalf("save failed: %v", err)
 	}
 	got, err := loadBoard(path)
@@ -82,7 +60,7 @@ func TestSaveThenLoadKeepsEveryField(t *testing.T) {
 	updated := time.Date(2026, 11, 2, 10, 0, 0, 0, time.UTC)
 	done := time.Date(2026, 11, 3, 11, 0, 0, 0, time.UTC)
 	due := time.Date(2026, 11, 4, 0, 0, 0, 0, time.UTC)
-	want := board{completed: {{
+	want := board.Board{board.Completed: {{
 		ID:        "abc123",
 		Text:      "ship it",
 		Priority:  "high",
@@ -123,10 +101,10 @@ func TestLoadReadsVersionOneFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load failed: %v", err)
 	}
-	want := board{
-		toDo:       {{ID: "c", Text: "third", Tags: []string{"+work"}}},
-		inProgress: {{ID: "a", Text: "first", Created: time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)}},
-		completed:  {{ID: "b", Text: "second"}},
+	want := board.Board{
+		board.ToDo:       {{ID: "c", Text: "third", Tags: []string{"+work"}}},
+		board.InProgress: {{ID: "a", Text: "first", Created: time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)}},
+		board.Completed:  {{ID: "b", Text: "second"}},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %+v, want %+v", got, want)
@@ -141,35 +119,35 @@ func TestLoadReturnsErrorForUnreadablePath(t *testing.T) {
 }
 
 func TestLegacyPlainListGoesToToDo(t *testing.T) {
-	got, err := readLegacyBoard(writeFile(t, "buy milk\ncall mum\n"))
+	got, err := ReadLegacy(writeFile(t, "buy milk\ncall mum\n"))
 	if err != nil {
 		t.Fatalf("read failed: %v", err)
 	}
-	assertBoardsEqual(t, got, texts{toDo: {"buy milk", "call mum"}})
+	assertBoardsEqual(t, got, texts{board.ToDo: {"buy milk", "call mum"}})
 }
 
 func TestLegacyTagsChooseTheColumn(t *testing.T) {
-	got, err := readLegacyBoard(writeFile(t, "[todo] a\n[doing] b\n[done] c\n[todo] [done] is not finished\n"))
+	got, err := ReadLegacy(writeFile(t, "[todo] a\n[doing] b\n[done] c\n[todo] [done] is not finished\n"))
 	if err != nil {
 		t.Fatalf("read failed: %v", err)
 	}
-	assertBoardsEqual(t, got, texts{toDo: {"a", "[done] is not finished"}, inProgress: {"b"}, completed: {"c"}})
+	assertBoardsEqual(t, got, texts{board.ToDo: {"a", "[done] is not finished"}, board.InProgress: {"b"}, board.Completed: {"c"}})
 }
 
 func TestLegacySkipsBlankLinesAndEmptyTasks(t *testing.T) {
-	got, err := readLegacyBoard(writeFile(t, "one\n\n   \n[done] \n[doing] two\n"))
+	got, err := ReadLegacy(writeFile(t, "one\n\n   \n[done] \n[doing] two\n"))
 	if err != nil {
 		t.Fatalf("read failed: %v", err)
 	}
-	assertBoardsEqual(t, got, texts{toDo: {"one"}, inProgress: {"two"}})
+	assertBoardsEqual(t, got, texts{board.ToDo: {"one"}, board.InProgress: {"two"}})
 }
 
 func TestLegacyCleansTabsAndWindowsLineEndings(t *testing.T) {
-	got, err := readLegacyBoard(writeFile(t, "[todo] a\tb\r\n"))
+	got, err := ReadLegacy(writeFile(t, "[todo] a\tb\r\n"))
 	if err != nil {
 		t.Fatalf("read failed: %v", err)
 	}
-	assertBoardsEqual(t, got, texts{toDo: {"a b"}})
+	assertBoardsEqual(t, got, texts{board.ToDo: {"a b"}})
 }
 
 func TestLoadRejectsBadFiles(t *testing.T) {
@@ -197,7 +175,7 @@ func TestLoadRejectsBadFiles(t *testing.T) {
 func TestFailedSaveKeepsPreviousData(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "tasks.json")
-	if err := saveBoard(path, texts{toDo: {"precious"}}.board()); err != nil {
+	if err := saveBoard(path, texts{board.ToDo: {"precious"}}.Board()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -208,20 +186,20 @@ func TestFailedSaveKeepsPreviousData(t *testing.T) {
 	}
 	t.Cleanup(func() { os.Chmod(dir, 0o700) })
 
-	if err := saveBoard(path, texts{toDo: {"replacement"}}.board()); err == nil {
+	if err := saveBoard(path, texts{board.ToDo: {"replacement"}}.Board()); err == nil {
 		t.Fatal("expected the save to fail")
 	}
 	got, err := loadBoard(path)
 	if err != nil {
 		t.Fatalf("load failed: %v", err)
 	}
-	assertBoardsEqual(t, got, texts{toDo: {"precious"}})
+	assertBoardsEqual(t, got, texts{board.ToDo: {"precious"}})
 }
 
 func TestSaveLeavesNoTemporaryFiles(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "tasks.json")
-	if err := saveBoard(path, texts{toDo: {"a"}}.board()); err != nil {
+	if err := saveBoard(path, texts{board.ToDo: {"a"}}.Board()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -229,8 +207,12 @@ func TestSaveLeavesNoTemporaryFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 1 || entries[0].Name() != "tasks.json" {
-		t.Errorf("folder holds %v, want only tasks.json", entries)
+	var names []string
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	if want := []string{"tasks.json", "tasks.json.lock"}; !slices.Equal(names, want) {
+		t.Errorf("folder holds %q, want %q", names, want)
 	}
 }
 
@@ -250,7 +232,7 @@ func TestSaveCreatesPrivateFolders(t *testing.T) {
 	dir := filepath.Join(parent, "lazydone")
 	path := filepath.Join(dir, "tasks.json")
 
-	if err := saveBoard(path, texts{toDo: {"a"}}.board()); err != nil {
+	if err := saveBoard(path, texts{board.ToDo: {"a"}}.Board()); err != nil {
 		t.Fatalf("save failed: %v", err)
 	}
 	assertMode(t, dir, 0o700)
@@ -263,7 +245,7 @@ func TestSaveMakesExistingFilePrivate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := saveBoard(path, texts{toDo: {"a"}}.board()); err != nil {
+	if err := saveBoard(path, texts{board.ToDo: {"a"}}.Board()); err != nil {
 		t.Fatalf("save failed: %v", err)
 	}
 	assertMode(t, path, 0o600)
@@ -275,7 +257,7 @@ func TestSaveLeavesExistingFolderPermissionsAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := saveBoard(filepath.Join(dir, "tasks.json"), texts{toDo: {"a"}}.board()); err != nil {
+	if err := saveBoard(filepath.Join(dir, "tasks.json"), texts{board.ToDo: {"a"}}.Board()); err != nil {
 		t.Fatalf("save failed: %v", err)
 	}
 	assertMode(t, dir, 0o755)
@@ -285,7 +267,7 @@ func TestSaveLeavesExistingFolderPermissionsAlone(t *testing.T) {
 // newest backup look old enough for the next save to create another.
 func saveAndAge(t *testing.T, path, text string) {
 	t.Helper()
-	if err := saveBoard(path, texts{toDo: {text}}.board()); err != nil {
+	if err := saveBoard(path, texts{board.ToDo: {text}}.Board()); err != nil {
 		t.Fatalf("save failed: %v", err)
 	}
 	old := time.Now().Add(-2 * time.Hour)
@@ -300,7 +282,7 @@ func assertBackup(t *testing.T, path string, number int, want string) {
 	if err != nil {
 		t.Fatalf("load failed: %v", err)
 	}
-	assertBoardsEqual(t, got, texts{toDo: {want}})
+	assertBoardsEqual(t, got, texts{board.ToDo: {want}})
 }
 
 func TestSaveBacksUpPreviousData(t *testing.T) {
@@ -315,7 +297,7 @@ func TestSaveBacksUpPreviousData(t *testing.T) {
 func TestRapidSavesShareOneBackup(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tasks.json")
 	for _, text := range []string{"first", "second", "third"} {
-		if err := saveBoard(path, texts{toDo: {text}}.board()); err != nil {
+		if err := saveBoard(path, texts{board.ToDo: {text}}.Board()); err != nil {
 			t.Fatalf("save failed: %v", err)
 		}
 	}
@@ -330,7 +312,7 @@ func TestRapidSavesShareOneBackup(t *testing.T) {
 
 func TestFailedBackupKeepsOlderBackups(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tasks.json")
-	if err := saveBoard(path, texts{toDo: {"current"}}.board()); err != nil {
+	if err := saveBoard(path, texts{board.ToDo: {"current"}}.Board()); err != nil {
 		t.Fatal(err)
 	}
 	old := time.Now().Add(-2 * time.Hour)
@@ -350,7 +332,7 @@ func TestFailedBackupKeepsOlderBackups(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 4 {
-		if err := saveBoard(path, texts{toDo: {"replacement"}}.board()); err == nil {
+		if err := saveBoard(path, texts{board.ToDo: {"replacement"}}.Board()); err == nil {
 			t.Fatal("expected the save to fail")
 		}
 	}
@@ -365,21 +347,21 @@ func TestFailedBackupKeepsOlderBackups(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load failed: %v", err)
 	}
-	assertBoardsEqual(t, got, texts{toDo: {"current"}})
+	assertBoardsEqual(t, got, texts{board.ToDo: {"current"}})
 }
 
 func TestSaveThroughSymlinkUpdatesTheRealFile(t *testing.T) {
 	dir := t.TempDir()
 	real := filepath.Join(dir, "real.json")
 	link := filepath.Join(dir, "link.json")
-	if err := saveBoard(real, texts{toDo: {"old"}}.board()); err != nil {
+	if err := saveBoard(real, texts{board.ToDo: {"old"}}.Board()); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(real, link); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := saveBoard(link, texts{toDo: {"new"}}.board()); err != nil {
+	if err := saveBoard(link, texts{board.ToDo: {"new"}}.Board()); err != nil {
 		t.Fatalf("save failed: %v", err)
 	}
 
@@ -394,7 +376,7 @@ func TestSaveThroughSymlinkUpdatesTheRealFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load failed: %v", err)
 	}
-	assertBoardsEqual(t, got, texts{toDo: {"new"}})
+	assertBoardsEqual(t, got, texts{board.ToDo: {"new"}})
 }
 
 func TestKeepsFiveMostRecentBackups(t *testing.T) {
@@ -413,7 +395,7 @@ func TestKeepsFiveMostRecentBackups(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load failed: %v", err)
 	}
-	assertBoardsEqual(t, got, texts{toDo: {"v8"}})
+	assertBoardsEqual(t, got, texts{board.ToDo: {"v8"}})
 }
 
 func assertStillSymlink(t *testing.T, link string) {
@@ -450,7 +432,7 @@ func TestSaveThroughDanglingSymlinkCreatesTheTarget(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			if err := saveBoard(link, texts{toDo: {"new"}}.board()); err != nil {
+			if err := saveBoard(link, texts{board.ToDo: {"new"}}.Board()); err != nil {
 				t.Fatalf("save failed: %v", err)
 			}
 
@@ -459,7 +441,7 @@ func TestSaveThroughDanglingSymlinkCreatesTheTarget(t *testing.T) {
 			if err != nil {
 				t.Fatalf("load failed: %v", err)
 			}
-			assertBoardsEqual(t, got, texts{toDo: {"new"}})
+			assertBoardsEqual(t, got, texts{board.ToDo: {"new"}})
 		})
 	}
 }
@@ -475,7 +457,7 @@ func TestSaveThroughChainOfDanglingSymlinks(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := saveBoard(first, texts{toDo: {"new"}}.board()); err != nil {
+	if err := saveBoard(first, texts{board.ToDo: {"new"}}.Board()); err != nil {
 		t.Fatalf("save failed: %v", err)
 	}
 
@@ -485,7 +467,7 @@ func TestSaveThroughChainOfDanglingSymlinks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load failed: %v", err)
 	}
-	assertBoardsEqual(t, got, texts{toDo: {"new"}})
+	assertBoardsEqual(t, got, texts{board.ToDo: {"new"}})
 }
 
 func TestSaveThroughSymlinkLoopFailsAndKeepsTheLink(t *testing.T) {
@@ -495,8 +477,172 @@ func TestSaveThroughSymlinkLoopFailsAndKeepsTheLink(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := saveBoard(link, texts{toDo: {"new"}}.board()); err == nil {
+	if err := saveBoard(link, texts{board.ToDo: {"new"}}.Board()); err == nil {
 		t.Error("a link that points at itself should be an error")
 	}
 	assertStillSymlink(t, link)
+}
+
+func addTask(text string) func(board.Board) board.Board {
+	return func(b board.Board) board.Board { return b.Add(board.NewTask(text, time.Now())) }
+}
+
+func TestUpdateAppliesChangeToLatestData(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tasks.json")
+	if err := saveBoard(path, texts{board.ToDo: {"saved elsewhere"}}.Board()); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := File{Path: path}.Update(addTask("new"))
+	if err != nil {
+		t.Fatalf("update failed: %v", err)
+	}
+	assertBoardsEqual(t, got, texts{board.ToDo: {"saved elsewhere", "new"}})
+	saved, err := loadBoard(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertBoardsEqual(t, saved, texts{board.ToDo: {"saved elsewhere", "new"}})
+}
+
+func TestConcurrentUpdatesLoseNothing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tasks.json")
+	const writers, each = 8, 15
+
+	var wg sync.WaitGroup
+	errs := make(chan error, writers*each)
+	for w := range writers {
+		wg.Go(func() {
+			for i := range each {
+				if _, err := (File{Path: path}).Update(addTask(fmt.Sprintf("%d-%d", w, i))); err != nil {
+					errs <- err
+				}
+			}
+		})
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+
+	got, err := loadBoard(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(got[board.ToDo]); n != writers*each {
+		t.Errorf("%d tasks saved, want %d", n, writers*each)
+	}
+}
+
+func TestUpdateDoesNotWriteOverBadFile(t *testing.T) {
+	const content = "not json"
+	path := writeFile(t, content)
+
+	if _, err := (File{Path: path}).Update(addTask("new")); err == nil {
+		t.Fatal("expected an error")
+	}
+	if got := readFile(t, path); got != content {
+		t.Errorf("file changed to %q", got)
+	}
+}
+
+func TestUpdateThroughSymlinkLocksTheRealFile(t *testing.T) {
+	dir := t.TempDir()
+	real, link := filepath.Join(dir, "real.json"), filepath.Join(dir, "link.json")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := (File{Path: link}).Update(addTask("new")); err != nil {
+		t.Fatalf("update failed: %v", err)
+	}
+	if _, err := os.Stat(real + ".lock"); err != nil {
+		t.Errorf("the real file's lock should be used: %v", err)
+	}
+	assertNotExist(t, link+".lock")
+}
+
+func assertNotExist(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("%s should not exist, stat error = %v", path, err)
+	}
+}
+
+func TestTasksWithoutIDsGetTheSameIDsOnEveryLoad(t *testing.T) {
+	path := writeFile(t, `{"version": 1, "tasks": [
+		{"text": "same", "status": "todo"},
+		{"text": "same", "status": "todo"},
+		{"text": "same", "status": "done"}
+	]}`)
+
+	first, err := loadBoard(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := loadBoard(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(first, second) {
+		t.Errorf("loads disagree: %+v and %+v", first, second)
+	}
+	ids := []string{first[board.ToDo][0].ID, first[board.ToDo][1].ID, first[board.Completed][0].ID}
+	if ids[0] == "" || ids[0] == ids[1] || ids[0] == ids[2] || ids[1] == ids[2] {
+		t.Errorf("IDs should be set and differ: %q", ids)
+	}
+
+	// The next save writes the IDs down, so they stay as the board changes.
+	updated, err := File{Path: path}.Update(func(b board.Board) board.Board {
+		b, _ = b.Delete(ids[0])
+		return b
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := updated[board.ToDo][0].ID; got != ids[1] {
+		t.Errorf("remaining task has ID %q, want %q", got, ids[1])
+	}
+	if !strings.Contains(readFile(t, path), ids[1]) {
+		t.Error("the save should write the IDs")
+	}
+}
+
+func TestModTime(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tasks.json")
+	if got, err := (File{Path: path}).ModTime(); err != nil || !got.IsZero() {
+		t.Errorf("missing file: got %v, %v, want zero time", got, err)
+	}
+
+	if err := saveBoard(path, texts{board.ToDo: {"a"}}.Board()); err != nil {
+		t.Fatal(err)
+	}
+	first, err := File{Path: path}.ModTime()
+	if err != nil || first.IsZero() {
+		t.Fatalf("got %v, %v, want a time", first, err)
+	}
+	if err := os.Chtimes(path, first.Add(-time.Minute), first.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveBoard(path, texts{board.ToDo: {"b"}}.Board()); err != nil {
+		t.Fatal(err)
+	}
+	if second, _ := (File{Path: path}).ModTime(); second.Equal(first.Add(-time.Minute)) {
+		t.Error("a save should change the time")
+	}
+}
+
+// Whatever a data file holds, loading returns a board or an error, never panics.
+func FuzzLoad(f *testing.F) {
+	f.Add([]byte(`{"version": 1, "tasks": [{"id": "a", "text": "x", "status": "doing"}]}`))
+	f.Add([]byte(`{"version": 1, "tasks": [{"text": "x", "status": "todo", "due": "bad"}]}`))
+	f.Add([]byte(`{"version": 2}`))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		path := filepath.Join(t.TempDir(), "tasks.json")
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = loadBoard(path)
+	})
 }

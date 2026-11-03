@@ -2,27 +2,48 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/vishalcoderathore/lazydone/internal/board"
+	"github.com/vishalcoderathore/lazydone/internal/boardtest"
+	"github.com/vishalcoderathore/lazydone/internal/store"
 )
+
+type texts = boardtest.Texts
+
+var (
+	assertBoardsEqual = boardtest.AssertEqual
+	readFile          = boardtest.ReadFile
+	writeFile         = boardtest.WriteFile
+)
+
+func loadBoard(path string) (board.Board, error) { return store.File{Path: path}.Load() }
+
+func saveBoard(path string, tasks board.Board) error { return store.File{Path: path}.Save(tasks) }
 
 // cliResult is what one run of the command line did.
 type cliResult struct {
 	stdout, stderr string
 	err            error
-	opened         bool   // whether the TUI was opened
-	path           string // the data file it was given
-	tasks          board  // the tasks it was given
+	opened         bool        // whether the TUI was opened
+	path           string      // the data file it was given
+	tasks          board.Board // the tasks it was given
 }
 
 func runCLI(t *testing.T, args ...string) cliResult {
 	t.Helper()
 	var stdout, stderr bytes.Buffer
 	var result cliResult
-	result.err = run(args, &stdout, &stderr, func(path string, tasks board) error {
+	result.err = run(args, &stdout, &stderr, func(path string, tasks board.Board) error {
 		result.opened, result.path, result.tasks = true, path, tasks
 		return nil
 	})
@@ -37,15 +58,6 @@ func useDataHome(t *testing.T) string {
 	home := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", home)
 	return filepath.Join(home, "lazydone", "tasks.json")
-}
-
-func readFile(t *testing.T, path string) string {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(data)
 }
 
 func assertNotExist(t *testing.T, path string) {
@@ -124,7 +136,7 @@ func TestHelpFlagShowsUsage(t *testing.T) {
 	if result.opened {
 		t.Error("the TUI should not open")
 	}
-	for _, want := range []string{"--version", "--file", "import"} {
+	for _, want := range []string{"--version", "--file", "import", "add", "ls", "count", "completion"} {
 		if !strings.Contains(result.stdout, want) {
 			t.Errorf("help should mention %q, got %q", want, result.stdout)
 		}
@@ -173,7 +185,7 @@ func TestDataFileIsTheSameFromAnyFolder(t *testing.T) {
 func TestFileFlagOverridesDataFile(t *testing.T) {
 	defaultPath := useDataHome(t)
 	path := filepath.Join(t.TempDir(), "other.json")
-	if err := saveBoard(path, texts{inProgress: {"elsewhere"}}.board()); err != nil {
+	if err := saveBoard(path, texts{board.InProgress: {"elsewhere"}}.Board()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -185,7 +197,7 @@ func TestFileFlagOverridesDataFile(t *testing.T) {
 	if result.path != path {
 		t.Errorf("path = %q, want %q", result.path, path)
 	}
-	assertBoardsEqual(t, result.tasks, texts{inProgress: {"elsewhere"}})
+	assertBoardsEqual(t, result.tasks, texts{board.InProgress: {"elsewhere"}})
 	assertNotExist(t, defaultPath)
 }
 
@@ -222,7 +234,7 @@ func TestImportMovesLegacyTasksToDataFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load failed: %v", err)
 	}
-	assertBoardsEqual(t, got, texts{toDo: {"a"}, inProgress: {"b"}, completed: {"c"}})
+	assertBoardsEqual(t, got, texts{board.ToDo: {"a"}, board.InProgress: {"b"}, board.Completed: {"c"}})
 	if !strings.Contains(result.stdout, "Imported 3 tasks") || !strings.Contains(result.stdout, path) {
 		t.Errorf("stdout = %q, should say what happened and where", result.stdout)
 	}
@@ -239,7 +251,7 @@ func TestImportGivesTasksIDsAndTimestamps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load failed: %v", err)
 	}
-	open, done := got[toDo][0], got[completed][0]
+	open, done := got[board.ToDo][0], got[board.Completed][0]
 	if open.ID == "" || done.ID == "" || open.ID == done.ID {
 		t.Errorf("IDs should be set and differ: %q, %q", open.ID, done.ID)
 	}
@@ -247,10 +259,10 @@ func TestImportGivesTasksIDsAndTimestamps(t *testing.T) {
 		t.Error("imported tasks should have a created time")
 	}
 	if !open.Completed.IsZero() {
-		t.Error("an open task should not be completed")
+		t.Error("an open task should not be board.Completed")
 	}
 	if done.Completed.IsZero() {
-		t.Error("a done task should have a completed time")
+		t.Error("a done task should have a board.Completed time")
 	}
 }
 
@@ -269,7 +281,7 @@ func TestImportLeavesOriginalUntouched(t *testing.T) {
 
 func TestImportAddsToExistingTasks(t *testing.T) {
 	path := useDataHome(t)
-	if err := saveBoard(path, texts{toDo: {"existing"}}.board()); err != nil {
+	if err := saveBoard(path, texts{board.ToDo: {"existing"}}.Board()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -281,7 +293,7 @@ func TestImportAddsToExistingTasks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load failed: %v", err)
 	}
-	assertBoardsEqual(t, got, texts{toDo: {"existing", "new"}})
+	assertBoardsEqual(t, got, texts{board.ToDo: {"existing", "new"}})
 }
 
 func TestImportHonorsFileFlag(t *testing.T) {
@@ -296,7 +308,7 @@ func TestImportHonorsFileFlag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load failed: %v", err)
 	}
-	assertBoardsEqual(t, got, texts{toDo: {"a"}})
+	assertBoardsEqual(t, got, texts{board.ToDo: {"a"}})
 	assertNotExist(t, defaultPath)
 }
 
@@ -330,5 +342,243 @@ func TestImportNeedsAPath(t *testing.T) {
 
 	if result := runCLI(t, "import"); result.err == nil {
 		t.Error("import without a path should fail")
+	}
+}
+
+// seed saves a board to the default data file.
+func seed(t *testing.T, tasks board.Board) string {
+	t.Helper()
+	path := useDataHome(t)
+	if err := saveBoard(path, tasks); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestAddSavesTaskWithTagsAndDueDate(t *testing.T) {
+	path := useDataHome(t)
+
+	result := runCLI(t, "add", "fix", "bug", "+work", "@home", "due:05-11-2026")
+
+	if result.err != nil {
+		t.Fatalf("run: %v", result.err)
+	}
+	if result.opened {
+		t.Error("add should not open the TUI")
+	}
+	got, err := loadBoard(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertBoardsEqual(t, got, texts{board.ToDo: {"fix bug"}})
+	added := got[board.ToDo][0]
+	if !slices.Equal(added.Tags, []string{"+work", "@home"}) {
+		t.Errorf("tags = %q", added.Tags)
+	}
+	if added.Due.Format("02-01-2006") != "05-11-2026" {
+		t.Errorf("due = %v", added.Due)
+	}
+	if added.ID == "" || added.Created.IsZero() {
+		t.Error("the task should have an ID and a created time")
+	}
+	if want := "Added: [todo] fix bug +work @home due:05-11-2026\n"; result.stdout != want {
+		t.Errorf("stdout = %q, want %q", result.stdout, want)
+	}
+}
+
+func TestAddTakesTaskAsOneQuotedArgument(t *testing.T) {
+	path := useDataHome(t)
+
+	if result := runCLI(t, "add", "call mum +family"); result.err != nil {
+		t.Fatalf("run: %v", result.err)
+	}
+	got, err := loadBoard(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertBoardsEqual(t, got, texts{board.ToDo: {"call mum"}})
+}
+
+func TestAddKeepsExistingTasks(t *testing.T) {
+	path := seed(t, texts{board.ToDo: {"old"}, board.Completed: {"done"}}.Board())
+
+	if result := runCLI(t, "add", "new"); result.err != nil {
+		t.Fatalf("run: %v", result.err)
+	}
+	got, err := loadBoard(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertBoardsEqual(t, got, texts{board.ToDo: {"old", "new"}, board.Completed: {"done"}})
+}
+
+func TestAddRejectsBadInputWithoutWriting(t *testing.T) {
+	for name, args := range map[string][]string{
+		"no arguments":   {"add"},
+		"only tags":      {"add", "+work", "@home"},
+		"weekday due":    {"add", "pay", "due:fri"},
+		"ISO due date":   {"add", "pay", "due:2026-11-05"},
+		"impossible day": {"add", "pay", "due:31-02-2026"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := useDataHome(t)
+
+			if result := runCLI(t, args...); result.err == nil {
+				t.Error("add should fail")
+			}
+			assertNotExist(t, path)
+		})
+	}
+}
+
+// listBoard has a task in each column, an archived task and a task with every
+// field that ls shows.
+func listBoard() board.Board {
+	due := time.Date(2026, 11, 5, 0, 0, 0, 0, time.Local)
+	return board.Board{
+		board.ToDo: {
+			{ID: "a", Text: "fix bug", Tags: []string{"+work"}, Due: due, Priority: "high"},
+			{ID: "b", Text: "hidden", Archived: true},
+		},
+		board.InProgress: {{ID: "c", Text: "call mum"}},
+		board.Completed:  {{ID: "d", Text: "walk dog"}},
+	}
+}
+
+func TestLsListsTasksInBoardOrder(t *testing.T) {
+	seed(t, listBoard())
+
+	result := runCLI(t, "ls")
+
+	if result.err != nil {
+		t.Fatalf("run: %v", result.err)
+	}
+	want := "[todo] fix bug +work due:05-11-2026 priority:high\n[doing] call mum\n[done] walk dog\n"
+	if result.stdout != want {
+		t.Errorf("stdout = %q, want %q", result.stdout, want)
+	}
+}
+
+func TestStatusFlagsChooseColumns(t *testing.T) {
+	seed(t, listBoard())
+	cases := map[string]struct {
+		flags     []string
+		ls, count string
+	}{
+		"todo":     {[]string{"--todo"}, "[todo] fix bug +work due:05-11-2026 priority:high\n", "1\n"},
+		"doing":    {[]string{"--doing"}, "[doing] call mum\n", "1\n"},
+		"done":     {[]string{"--done"}, "[done] walk dog\n", "1\n"},
+		"two":      {[]string{"--doing", "--done"}, "[doing] call mum\n[done] walk dog\n", "2\n"},
+		"no flags": {nil, "[todo] fix bug +work due:05-11-2026 priority:high\n[doing] call mum\n[done] walk dog\n", "3\n"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := runCLI(t, append([]string{"ls"}, c.flags...)...); got.err != nil || got.stdout != c.ls {
+				t.Errorf("ls stdout = %q, err = %v, want %q", got.stdout, got.err, c.ls)
+			}
+			if got := runCLI(t, append([]string{"count"}, c.flags...)...); got.err != nil || got.stdout != c.count {
+				t.Errorf("count stdout = %q, err = %v, want %q", got.stdout, got.err, c.count)
+			}
+		})
+	}
+}
+
+func TestLsJSON(t *testing.T) {
+	seed(t, listBoard())
+
+	result := runCLI(t, "ls", "--json", "--todo", "--doing")
+
+	if result.err != nil {
+		t.Fatalf("run: %v", result.err)
+	}
+	var got []struct {
+		ID, Text, Status, Priority string
+		Tags                       []string
+		Due                        time.Time
+	}
+	if err := json.Unmarshal([]byte(result.stdout), &got); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, result.stdout)
+	}
+	if len(got) != 2 || got[0].ID != "a" || got[0].Status != "todo" || got[1].ID != "c" || got[1].Status != "doing" {
+		t.Fatalf("got %+v", got)
+	}
+	if got[0].Priority != "high" || !slices.Equal(got[0].Tags, []string{"+work"}) || got[0].Due.Day() != 5 {
+		t.Errorf("fields missing from %+v", got[0])
+	}
+}
+
+func TestLsAndCountOnAnEmptyBoard(t *testing.T) {
+	path := useDataHome(t)
+
+	for args, want := range map[string]string{"ls": "", "ls --json": "[]\n", "count": "0\n"} {
+		result := runCLI(t, strings.Fields(args)...)
+		if result.err != nil || result.stdout != want {
+			t.Errorf("%s: stdout = %q, err = %v, want %q", args, result.stdout, result.err, want)
+		}
+	}
+	assertNotExist(t, path)
+}
+
+func TestLsReportsABadDataFile(t *testing.T) {
+	path := writeFile(t, "not json")
+
+	if result := runCLI(t, "ls", "--file", path); result.err == nil {
+		t.Error("ls should fail on a bad data file")
+	}
+}
+
+func TestCompletionScripts(t *testing.T) {
+	useDataHome(t)
+	for _, shell := range []string{"bash", "zsh", "fish"} {
+		t.Run(shell, func(t *testing.T) {
+			result := runCLI(t, "completion", shell)
+			if result.err != nil || !strings.Contains(result.stdout, "lazydone") {
+				t.Errorf("err = %v, stdout starts %.80q", result.err, result.stdout)
+			}
+		})
+	}
+}
+
+// Several processes adding at once must not lose any task. The test runs
+// itself again as the child processes.
+func TestConcurrentAddsFromManyProcessesLoseNothing(t *testing.T) {
+	const childEnv, processes, each = "LAZYDONE_ADD_CHILD", 6, 10
+	if path := os.Getenv(childEnv); path != "" {
+		for i := range each {
+			if result := runCLI(t, "add", fmt.Sprintf("task %d-%d", os.Getpid(), i), "--file", path); result.err != nil {
+				t.Fatal(result.err)
+			}
+		}
+		return
+	}
+
+	path := filepath.Join(t.TempDir(), "tasks.json")
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	children := make([]*exec.Cmd, processes)
+	outputs := make([]*bytes.Buffer, processes)
+	for i := range children {
+		outputs[i] = &bytes.Buffer{}
+		children[i] = exec.Command(binary, "-test.run=^TestConcurrentAddsFromManyProcessesLoseNothing$")
+		children[i].Env = append(os.Environ(), childEnv+"="+path)
+		children[i].Stdout, children[i].Stderr = outputs[i], outputs[i]
+		if err := children[i].Start(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, child := range children {
+		if err := child.Wait(); err != nil {
+			t.Fatalf("child %d: %v\n%s", i, err, outputs[i])
+		}
+	}
+
+	got, err := loadBoard(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(got[board.ToDo]); n != processes*each {
+		t.Errorf("%d tasks saved, want %d", n, processes*each)
 	}
 }

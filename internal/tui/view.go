@@ -1,4 +1,4 @@
-package main
+package tui
 
 import (
 	"fmt"
@@ -8,6 +8,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/lucasb-eyer/go-colorful"
+
+	"github.com/vishalcoderathore/lazydone/internal/board"
 )
 
 const (
@@ -51,10 +53,10 @@ var (
 	errorStyle    = lipgloss.NewStyle().Foreground(colorRed).Bold(true)
 )
 
-var columns = [numColumns]column{
-	toDo:       {"To Do", "📋", "○", lipgloss.NewStyle().Foreground(colorBlue), newGradient(colorBlue, colorMauve)},
-	inProgress: {"In Progress", "🚧", "◐", lipgloss.NewStyle().Foreground(colorYellow), newGradient(colorYellow, colorPeach)},
-	completed:  {"Completed", "✅", "✓", lipgloss.NewStyle().Foreground(colorGreen), newGradient(colorGreen, colorTeal)},
+var columns = [board.NumColumns]column{
+	board.ToDo:       {"To Do", "📋", "○", lipgloss.NewStyle().Foreground(colorBlue), newGradient(colorBlue, colorMauve)},
+	board.InProgress: {"In Progress", "🚧", "◐", lipgloss.NewStyle().Foreground(colorYellow), newGradient(colorYellow, colorPeach)},
+	board.Completed:  {"Completed", "✅", "✓", lipgloss.NewStyle().Foreground(colorGreen), newGradient(colorGreen, colorTeal)},
 }
 
 // inputBorder is the border of the panel for typing a new task.
@@ -123,13 +125,13 @@ func (m model) View() string {
 
 func (m model) viewColumns() string {
 	height := m.height - detailsHeight - footerHeight
-	width := m.width / numColumns
+	width := m.width / board.NumColumns
 
 	var panels []string
-	for i := range numColumns {
+	for i := range board.NumColumns {
 		w := width
-		if i == numColumns-1 {
-			w = m.width - width*(numColumns-1) // the last column fills any leftover space
+		if i == board.NumColumns-1 {
+			w = m.width - width*(board.NumColumns-1) // the last column fills any leftover space
 		}
 		panels = append(panels, m.viewColumn(i, w, height))
 	}
@@ -189,7 +191,7 @@ func (m model) viewDetails() string {
 
 	if m.adding {
 		title := "[4] 📝 New Task"
-		if m.editing {
+		if m.editing != "" {
 			title = "[4] 📝 Edit Task"
 		}
 		return panel(title, "", []string{m.input.View()}, m.width, detailsHeight, true, inputBorder)
