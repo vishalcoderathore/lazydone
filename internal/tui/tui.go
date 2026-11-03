@@ -42,7 +42,8 @@ type model struct {
 	archive   bool             // true while showing archived tasks instead of the board
 	sortBy    board.Sort       // the order each column is shown in
 	query     string           // the last search, for n and N
-	searching bool             // true while the search input is open
+	searching bool             // true while the search popup is open
+	found     int              // the chosen row of the search popup's matches
 	picking   bool             // true while the tag picker is open
 	pick      int              // the chosen row of the tag picker; 0 is All tags
 	width     int              // terminal width
@@ -120,7 +121,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		m.input.Width = msg.Width - 3 // the panel's borders, and the cursor at the end
+		m.input.Width = m.inputWidth()
 		// A bigger screen has less to scroll through.
 		m.scroll = min(m.scroll, max(len(m.detailsLines())-detailsRows, 0))
 		m.helpScroll = min(m.helpScroll, max(len(helpBindings())-m.helpRows(), 0))

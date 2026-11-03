@@ -1,10 +1,10 @@
 package tui
 
 import (
+	"cmp"
 	"fmt"
 	"slices"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
@@ -214,33 +214,185 @@ func (m model) viewPicker() string {
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, popup)
 }
 
-// openSearch opens the input for a search across the visible tasks.
+// searchWidth is the widest the search popup gets, and searchRows the most
+// matches it lists at once.
+const (
+	searchWidth = 72
+	searchRows  = 10
+)
+
+// searchMatch is a visible task that matches the search, and where.
+type searchMatch struct {
+	column, index int // where the task is shown
+	item          board.Task
+	positions     []int // matched runes in searchText(item)
+	score         int
+}
+
+// searchText is what a search looks through: a task's text, then its tags,
+// then its notes. Rows in the search popup show its start, up to the notes.
+func searchText(item board.Task) string {
+	parts := append([]string{item.Text}, item.Tags...)
+	if item.Notes != "" {
+		parts = append(parts, item.Notes)
+	}
+	return strings.Join(parts, " ")
+}
+
+// searchMatches lists the visible tasks that match query, best first. Of two
+// equal matches, the one that starts earlier wins, so a match in a task's text
+// beats one in its notes. Otherwise they keep board order.
+func (m model) searchMatches(query string) []searchMatch {
+	var found []searchMatch
+	for column := range board.NumColumns {
+		for index, item := range m.visible(column) {
+			if positions, score, ok := fuzzyMatch(searchText(item), query); ok {
+				found = append(found, searchMatch{column, index, item, positions, score})
+			}
+		}
+	}
+	slices.SortStableFunc(found, func(a, b searchMatch) int {
+		return cmp.Or(b.score-a.score, a.positions[0]-b.positions[0])
+	})
+	return found
+}
+
+// searchPopupWidth is how wide the search popup is on this screen.
+func (m model) searchPopupWidth() int {
+	return min(m.width, searchWidth)
+}
+
+// inputWidth is how much text the input shows at once: the search popup's
+// width while searching, or the details panel's otherwise. Both leave room for
+// the borders and the cursor at the end, and the popup for its "/ " prompt.
+func (m model) inputWidth() int {
+	if m.searching {
+		return m.searchPopupWidth() - 5
+	}
+	return m.width - 3
+}
+
+// openSearch opens the search popup for a search across the visible tasks.
 func (m model) openSearch() model {
 	m.searching = true
 	m.input.Reset()
+	m.input.Width = m.inputWidth()
 	return m
 }
 
-// updateSearch handles keys while the search input is open. Enter jumps to
-// the first match from the selected task on.
+// closeSearch closes the search popup, giving the input back to the details
+// panel.
+func (m model) closeSearch() model {
+	m.searching, m.found = false, 0
+	m.input.Reset()
+	m.input.Width = m.inputWidth()
+	return m
+}
+
+// updateSearch handles keys while the search popup is open. Typing narrows
+// the matches, up and down (or ctrl+p and ctrl+n) choose one, and enter jumps
+// to it. n and N then go through the matches in board order.
 func (m model) updateSearch(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	query := strings.TrimSpace(m.input.Value())
 	switch k.Type {
 	case tea.KeyEnter:
-		m.query = strings.TrimSpace(m.input.Value())
-		m.searching = false
-		m.input.Reset()
-		if m.query == "" {
+		matches, found := m.searchMatches(query), m.found
+		m = m.closeSearch()
+		m.query = query
+		if query == "" {
 			return m, nil
 		}
-		return m.jumpToMatch(1, true), nil
+		if len(matches) > 0 {
+			chosen := matches[min(found, len(matches)-1)]
+			m.active, m.cursors[chosen.column] = chosen.column, chosen.index
+		}
+		return m.jumpToMatch(1, true), nil // says which match this is, or that none matched
 	case tea.KeyEsc:
-		m.searching = false
-		m.input.Reset()
+		return m.closeSearch(), nil
+	case tea.KeyUp, tea.KeyCtrlP:
+		m.found = max(m.found-1, 0)
+		return m, nil
+	case tea.KeyDown, tea.KeyCtrlN:
+		m.found = max(0, min(m.found+1, len(m.searchMatches(query))-1))
 		return m, nil
 	}
+	before := m.input.Value()
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(k)
+	if m.input.Value() != before {
+		m.found = 0 // the best match of the new search
+	}
 	return m, cmd
+}
+
+// viewSearch draws the search popup in the middle of the screen, like the tag
+// picker: the input, a count, and the matches so far, best first.
+func (m model) viewSearch() string {
+	query := strings.TrimSpace(m.input.Value())
+	matches := m.searchMatches(query)
+	count := ""
+	switch {
+	case query == "":
+	case len(matches) == 0:
+		count = "No match"
+	case len(matches) == 1:
+		count = "1 match"
+	default:
+		count = fmt.Sprintf("%d matches", len(matches))
+	}
+	lines := []string{selectedStyle.Render("/ ") + m.input.View(), faintStyle.Render("  " + count)}
+
+	rows := max(0, min(len(matches), searchRows, m.height-2-len(lines)))
+	chosen := min(m.found, len(matches)-1)
+	first := max(0, chosen-rows+1)
+	for i, match := range matches[first : first+rows] {
+		lines = append(lines, searchRow(match, first+i == chosen))
+	}
+	popup := panel("Search text, tags and notes", "↑↓: choose · enter: jump · esc: cancel", lines,
+		m.searchPopupWidth(), len(lines)+2, true, inputBorder)
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, popup)
+}
+
+// searchRow draws one match in the search popup: its column's bullet, then
+// its text and tags with the matched letters picked out. A match in the notes,
+// which the row leaves out, is said instead.
+func searchRow(match searchMatch, chosen bool) string {
+	style := textStyle
+	prefix := "  "
+	if chosen {
+		style, prefix = selectedStyle, "❯ "
+	}
+	hit := style.Foreground(colorPeach).Bold(true).Underline(true)
+
+	shown := []rune(strings.Join(append([]string{match.item.Text}, match.item.Tags...), " "))
+	matched := make([]bool, len(shown))
+	inNotes := false
+	for _, at := range match.positions {
+		if at < len(shown) {
+			matched[at] = true
+		} else {
+			inNotes = true
+		}
+	}
+
+	var s strings.Builder
+	s.WriteString(style.Render(prefix) + columns[match.column].style.Render(columns[match.column].bullet) + style.Render(" "))
+	for start := 0; start < len(shown); {
+		end := start
+		for end < len(shown) && matched[end] == matched[start] {
+			end++
+		}
+		if matched[start] {
+			s.WriteString(hit.Render(string(shown[start:end])))
+		} else {
+			s.WriteString(style.Render(string(shown[start:end])))
+		}
+		start = end
+	}
+	if inNotes {
+		s.WriteString(faintStyle.Render(" · in notes"))
+	}
+	return s.String()
 }
 
 // jumpToMatch selects the next (1) or previous (-1) visible task that matches
@@ -304,16 +456,6 @@ func boolInt(b bool) int {
 // appear in order, though not necessarily together, in the task's text, tags
 // or notes, ignoring case. So "mlk" finds "buy milk".
 func matchesSearch(item board.Task, query string) bool {
-	haystack := strings.ToLower(strings.Join(append([]string{item.Text, item.Notes}, item.Tags...), " "))
-	for _, r := range strings.ToLower(query) {
-		if r == ' ' {
-			continue
-		}
-		i := strings.IndexRune(haystack, r)
-		if i < 0 {
-			return false
-		}
-		haystack = haystack[i+utf8.RuneLen(r):]
-	}
-	return true
+	_, _, ok := fuzzyMatch(searchText(item), query)
+	return ok
 }

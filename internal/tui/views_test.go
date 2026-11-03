@@ -8,6 +8,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/vishalcoderathore/lazydone/internal/board"
 )
@@ -358,24 +360,104 @@ func searchTasks() board.Board {
 }
 
 func TestSearchJumpsBetweenMatchesAcrossColumns(t *testing.T) {
+	// All three match "mlk" equally tightly, and milkshake's match starts first.
 	m := press(t, boardModel(t, searchTasks()), "j", "/", "mlk", tea.KeyEnter)
 
-	if m.active != board.InProgress || selectedText(m) != "write report" {
-		t.Errorf("selected %q, want the next match after the selected task, found in notes", selectedText(m))
+	if m.active != board.Completed || selectedText(m) != "milkshake" {
+		t.Errorf("selected %q, want the best match", selectedText(m))
 	}
-	assertViewContains(t, m, `Match 2 of 3 for "mlk"`)
+	assertViewContains(t, m, `Match 3 of 3 for "mlk"`)
 
 	m = press(t, m, "n")
-	if selectedText(m) != "milkshake" {
-		t.Errorf("n selected %q, want milkshake", selectedText(m))
+	if selectedText(m) != "buy milk" {
+		t.Errorf("n should wrap around to the first match on the board, selected %q", selectedText(m))
 	}
 	m = press(t, m, "n")
-	if selectedText(m) != "buy milk" {
-		t.Errorf("n should wrap around, selected %q", selectedText(m))
+	if m.active != board.InProgress || selectedText(m) != "write report" {
+		t.Errorf("n selected %q, want the next match on the board, found in notes", selectedText(m))
 	}
 	m = press(t, m, "N")
-	if selectedText(m) != "milkshake" {
+	if selectedText(m) != "buy milk" {
 		t.Errorf("N should go back, selected %q", selectedText(m))
+	}
+}
+
+func rankedTasks() board.Board {
+	return board.Board{
+		board.ToDo:       {{ID: "a", Text: "summarily kept"}},
+		board.InProgress: {{ID: "b", Text: "milk"}},
+		board.Completed:  {{ID: "c", Text: "write report", Notes: "about milk"}},
+	}
+}
+
+func TestSearchListsTheBestMatchesFirst(t *testing.T) {
+	m := press(t, boardModel(t, rankedTasks()), "/", "milk")
+
+	lines := strings.Split(ansi.Strip(m.View()), "\n")
+	rowOf := func(column int, text string) int { // rows start with their column's bullet
+		for i, line := range lines {
+			if strings.Contains(line, columns[column].bullet+" "+text) {
+				return i
+			}
+		}
+		return -1
+	}
+	// write report matches as tightly, but in its notes, so after milk.
+	// summarily kept matches spread out, so last.
+	best, second, third := rowOf(board.InProgress, "milk"), rowOf(board.Completed, "write report"), rowOf(board.ToDo, "summarily kept")
+	if best < 0 || second <= best || third <= second {
+		t.Fatalf("want milk, then write report, then summarily kept:\n%s", strings.Join(lines, "\n"))
+	}
+	assertViewContains(t, m, "in notes") // write report matched only in its notes
+
+	m = press(t, m, tea.KeyEnter)
+	if selectedText(m) != "milk" {
+		t.Errorf("enter selected %q, want the best match", selectedText(m))
+	}
+}
+
+func TestSearchChoosesAMatchWithArrowsOrCtrlNP(t *testing.T) {
+	m := press(t, boardModel(t, rankedTasks()), "/", "milk", tea.KeyDown, tea.KeyEnter)
+	if selectedText(m) != "write report" {
+		t.Errorf("down then enter selected %q, want the second match", selectedText(m))
+	}
+
+	m = press(t, m, "/", "milk", tea.KeyCtrlN, tea.KeyCtrlN, tea.KeyCtrlN, tea.KeyCtrlP, tea.KeyEnter)
+	if selectedText(m) != "write report" {
+		t.Errorf("selected %q; ctrl+n should stop at the last match, then ctrl+p go up one", selectedText(m))
+	}
+
+	m = press(t, m, "/", "mi", tea.KeyDown, "l", tea.KeyEnter) // typing goes back to the best match
+	if selectedText(m) != "milk" {
+		t.Errorf("selected %q, want the best match for %q", selectedText(m), "mil")
+	}
+}
+
+func TestSearchOpensAPopupThatCountsMatches(t *testing.T) {
+	m := press(t, boardModel(t, searchTasks()), "/")
+	assertViewContains(t, m, "Search text, tags and notes")
+	assertViewOmits(t, m, "buy milk") // the popup takes the screen, like the tag picker
+
+	m = press(t, m, "mlk")
+	assertViewContains(t, m, "3 matches")
+	m = press(t, m, tea.KeyBackspace, tea.KeyBackspace, tea.KeyBackspace, "money")
+	assertViewContains(t, m, "1 match")
+	m = press(t, m, "z")
+	assertViewContains(t, m, "No match")
+
+	m = press(t, m, tea.KeyEsc)
+	assertViewContains(t, m, "buy milk")
+}
+
+func TestSearchPopupFitsATinyScreen(t *testing.T) {
+	m := press(t, boardModel(t, searchTasks()), "/", "a very long search that is wider than the popup")
+	for _, width := range []int{minWidth, 60, 200} {
+		m = sized(m, width, minHeight)
+		for _, line := range strings.Split(m.View(), "\n") {
+			if w := lipgloss.Width(line); w > width {
+				t.Fatalf("at width %d a line is %d wide: %q", width, w, line)
+			}
+		}
 	}
 }
 

@@ -80,7 +80,7 @@ Press `?` in the app to see every key.
 | `t` | Today view on or off: tasks due today or overdue, and tasks done today |
 | `f` | Filter by tag |
 | `s` | Sort by manual order, priority, due date or creation date |
-| `/` | Search text, tags and notes; `n` / `N` jump to the next or previous match |
+| `/` | Fuzzy search text, tags and notes, best matches first: `↑` / `↓` or `Ctrl-p` / `Ctrl-n` choose one, `Enter` jumps to it. Then `n` / `N` jump to the next or previous match on the board |
 | `A` | Archive a completed task, or restore one in the archive view |
 | `z` | Show archived tasks, or go back to the board |
 | `Ctrl-e` / `Ctrl-y` | Scroll the details panel down or up |

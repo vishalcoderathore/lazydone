@@ -42,7 +42,7 @@ var keys = struct {
 	Sort:           bind("s", "next sort order", "s"),
 	Archive:        bind("A", "archive / restore task", "A"),
 	Archived:       bind("z", "archived tasks on / off", "z"),
-	Search:         bind("/", "search", "/"),
+	Search:         bind("/", "fuzzy search", "/"),
 	NextMatch:      bind("n", "next match", "n"),
 	PreviousMatch:  bind("N", "previous match", "N"),
 	Retry:          bind("r", "retry save", "r"),

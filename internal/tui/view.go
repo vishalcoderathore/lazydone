@@ -124,6 +124,9 @@ func (m model) View() string {
 	if m.picking {
 		return m.viewPicker()
 	}
+	if m.searching {
+		return m.viewSearch()
+	}
 
 	view := lipgloss.JoinVertical(lipgloss.Left, m.viewColumns(), m.withProgress(m.viewDetails()), m.viewFooter())
 	return overlayParticles(view, m.particles, m.width)
@@ -235,9 +238,6 @@ func (m model) viewDetails() string {
 		}
 		return panel(title, "", []string{m.input.View()}, m.width, detailsHeight, true, inputBorder)
 	}
-	if m.searching {
-		return panel("[4] 🔎 Search text, tags and notes", "", []string{m.input.View()}, m.width, detailsHeight, true, inputBorder)
-	}
 
 	// Right after adding, the new task would be selected and shown here, which
 	// looks as if the input box was not cleared. Stay blank until the next key.
@@ -317,9 +317,7 @@ func (m model) viewFooter() string {
 		return statusStyle.Render(ansi.Truncate(m.status, m.width, "…"))
 	}
 	hints := "enter: save | esc: cancel"
-	if m.searching {
-		hints = "enter: search | esc: cancel"
-	} else if !m.adding {
+	if !m.adding {
 		var parts []string
 		for _, binding := range footerBindings() {
 			parts = append(parts, binding.Help().Key+": "+binding.Help().Desc)
