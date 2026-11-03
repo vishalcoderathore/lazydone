@@ -77,12 +77,20 @@ Press `?` in the app to see every key.
 | `Space` | Move a task to the next column |
 | `H` / `L`, `Shift-←` / `Shift-→` | Move a task left or right |
 | `J` / `K` | Reorder a task down or up |
+| `t` | Today view on or off: tasks due today or overdue, and tasks done today |
+| `f` | Filter by tag |
+| `s` | Sort by manual order, priority, due date or creation date |
+| `/` | Search text, tags and notes; `n` / `N` jump to the next or previous match |
+| `A` | Archive a completed task, or restore one in the archive view |
+| `z` | Show archived tasks, or go back to the board |
 | `Ctrl-e` / `Ctrl-y` | Scroll the details panel down or up |
 | `r` | Retry a failed save |
 | `?` | Show help |
 | `q` or `Ctrl-C` | Quit |
 
-While typing a task, press `Enter` to save or `Esc` to cancel.
+While typing a task, press `Enter` to save or `Esc` to cancel. Tags and due dates work there the same way as with `lazydone add`, below.
+
+Overdue tasks are shown in red. Sorting changes only what you see, so pressing `s` until it says manual order brings back your own order. `J` and `K` work only in manual order.
 
 If a save has failed, `q` warns you once before quitting. `Ctrl-C` always quits immediately.
 
@@ -91,15 +99,17 @@ If a save has failed, `q` warns you once before quitting. `Ctrl-C` always quits 
 Add and check tasks without opening the app. These work while the app is open in another terminal, and the app shows the change within a second.
 
 ```sh
-lazydone add fix bug +work @home due:05-11-2026
+lazydone add fix bug +work @home due:fri
 lazydone ls
 lazydone count --todo
 ```
 
-- `add` puts a task in To Do. A word starting with `+` or `@` followed by a letter becomes a tag, and `due:DD-MM-YYYY` sets a due date. Both are taken out of the task's text.
+- `add` puts a task in To Do. A word starting with `+` or `@` followed by a letter becomes a tag, and `due:` sets a due date. Both are taken out of the task's text.
+- A due date can be `today`, `tomorrow`, a weekday such as `fri` or `friday`, `+3d` or `+2w` for days or weeks from today, or a date in `DD-MM-YYYY` form. A weekday means the next one after today, so `fri` on a Friday is a week away.
 - `ls` lists tasks, one per line, in the same form `add` accepts. Add `--json` for output to use in scripts.
 - `count` prints only the number of tasks, for a tmux status line or a shell prompt.
 - `--todo`, `--doing` and `--done` limit `ls` and `count` to those columns. With none of them, every column is included.
+- `--today` limits them to what the Today view shows. For a tmux status line, `lazydone count --today --todo --doing` gives what's left to do today.
 
 Archived tasks are left out of `ls` and `count`.
 

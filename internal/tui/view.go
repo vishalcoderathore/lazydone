@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/lucasb-eyer/go-colorful"
 
 	"github.com/vishalcoderathore/lazydone/internal/board"
+	"github.com/vishalcoderathore/lazydone/internal/due"
 )
 
 const (
@@ -51,6 +53,7 @@ var (
 	hintStyle     = lipgloss.NewStyle().Foreground(colorBlue)
 	statusStyle   = lipgloss.NewStyle().Foreground(colorTeal).Bold(true)
 	errorStyle    = lipgloss.NewStyle().Foreground(colorRed).Bold(true)
+	overdueStyle  = lipgloss.NewStyle().Foreground(colorRed)
 )
 
 var columns = [board.NumColumns]column{
@@ -118,6 +121,9 @@ func (m model) View() string {
 	if m.help {
 		return m.viewHelp()
 	}
+	if m.picking {
+		return m.viewPicker()
+	}
 
 	view := lipgloss.JoinVertical(lipgloss.Left, m.viewColumns(), m.withProgress(m.viewDetails()), m.viewFooter())
 	return overlayParticles(view, m.particles, m.width)
@@ -140,9 +146,9 @@ func (m model) viewColumns() string {
 
 func (m model) viewColumn(index, width, height int) string {
 	col := columns[index]
-	tasks := m.tasks[index]
+	tasks := m.visible(index)
 	cursor := m.cursors[index]
-	active := !m.adding && index == m.active
+	active := !m.adding && !m.searching && index == m.active
 
 	title := fmt.Sprintf("[%d] %s %s", index+1, col.icon, col.title)
 	position := ""
@@ -159,8 +165,16 @@ func (m model) viewColumn(index, width, height int) string {
 	if len(tasks) == 0 {
 		lines = append(lines, faintStyle.Render("  No tasks"))
 	}
+	now := m.now()
 	for i := first; i < last; i++ {
-		lines = append(lines, viewTask(col, priorityMarkers[tasks[i].Priority]+tasks[i].Text, i == cursor, active, width-2))
+		item := tasks[i]
+		// The due date comes before the tags, so that it's the last to be cut off.
+		text := priorityMarkers[item.Priority] + item.Text
+		if label := dueLabel(index, item, now); label != "" {
+			text += " · " + label
+		}
+		text = strings.Join(append([]string{text}, item.Tags...), " ")
+		lines = append(lines, viewTask(col, text, board.Overdue(index, item, now), i == cursor, active, width-2))
 	}
 	return panel(title, position, lines, width, height, active, col.border)
 }
@@ -168,20 +182,45 @@ func (m model) viewColumn(index, width, height int) string {
 // priorityMarkers are shown in front of a task's text.
 var priorityMarkers = map[string]string{"low": "! ", "medium": "!! ", "high": "!!! "}
 
-func viewTask(col column, task string, selected, active bool, width int) string {
+// dueLabel is how a task's due date shows on the board: "due today", or the
+// date, without the year if it's this year. A completed task shows none.
+func dueLabel(column int, item board.Task, now time.Time) string {
+	switch {
+	case item.Due.IsZero() || column == board.Completed:
+		return ""
+	case board.DueToday(column, item, now):
+		return "due today"
+	case item.Due.Year() == now.Year():
+		return "due " + item.Due.Format("02-01")
+	default:
+		return "due " + item.Due.Format(due.Layout)
+	}
+}
+
+// viewTask draws one task of a column. An overdue task is red, so that it
+// stands out on a busy board.
+func viewTask(col column, task string, overdue, selected, active bool, width int) string {
 	marker := "  "
 	if selected && active {
 		marker = "❯ "
 	}
 	row := ansi.Truncate(marker+col.bullet+" "+task, width, "…")
 
+	style := col.style
+	if overdue {
+		style = overdueStyle
+	}
 	if selected && active {
-		return selectedStyle.Width(width).Render(row)
+		selected := selectedStyle
+		if overdue {
+			selected = selected.Foreground(colorRed)
+		}
+		return selected.Width(width).Render(row)
 	}
 	if selected {
-		return col.style.Bold(true).Render(row)
+		return style.Bold(true).Render(row)
 	}
-	return col.style.Render(row)
+	return style.Render(row)
 }
 
 // viewDetails draws the bottom panel. It shows the full text of the selected
@@ -196,6 +235,9 @@ func (m model) viewDetails() string {
 		}
 		return panel(title, "", []string{m.input.View()}, m.width, detailsHeight, true, inputBorder)
 	}
+	if m.searching {
+		return panel("[4] 🔎 Search text, tags and notes", "", []string{m.input.View()}, m.width, detailsHeight, true, inputBorder)
+	}
 
 	// Right after adding, the new task would be selected and shown here, which
 	// looks as if the input box was not cleared. Stay blank until the next key.
@@ -205,6 +247,9 @@ func (m model) viewDetails() string {
 
 	lines := m.detailsLines()
 	title := "[4] 🔍 Details"
+	if note := m.viewNote(); note != "" {
+		title += " · " + note
+	}
 	if len(lines) == 0 {
 		return panel(title, "", []string{faintStyle.Render("Nothing selected")}, m.width, detailsHeight, false, border)
 	}
@@ -218,14 +263,39 @@ func (m model) viewDetails() string {
 // detailsLines is everything that the details panel has to show about the
 // selected task, wrapped to fit. It's empty if no task is selected.
 func (m model) detailsLines() []string {
-	tasks := m.tasks[m.active]
-	if len(tasks) == 0 {
+	selected, ok := m.selected()
+	if !ok {
 		return nil
 	}
-	selected := tasks[m.cursors[m.active]]
-	lines := strings.Split(ansi.Wrap(selected.Text, m.width-2, ""), "\n")
+	// Everything but the text shares the first line, so that the text still
+	// shows in a panel three lines high.
+	var facts []string
 	if selected.Priority != "" {
-		lines = append([]string{"Priority: " + selected.Priority}, lines...)
+		facts = append(facts, "Priority: "+selected.Priority)
+	}
+	if !selected.Due.IsZero() {
+		fact := "Due: " + selected.Due.Format(due.Layout)
+		if board.Overdue(m.active, selected, m.now()) {
+			fact += " (overdue)"
+		} else if board.DueToday(m.active, selected, m.now()) {
+			fact += " (today)"
+		}
+		facts = append(facts, fact)
+	}
+	if len(selected.Tags) > 0 {
+		facts = append(facts, "Tags: "+strings.Join(selected.Tags, " "))
+	}
+	wrap := func(text string) []string { return strings.Split(ansi.Wrap(text, m.width-2, ""), "\n") }
+	var lines []string
+	if len(facts) > 0 {
+		lines = wrap(strings.Join(facts, " · "))
+	}
+	lines = append(lines, wrap(selected.Text)...)
+	if selected.Notes != "" {
+		lines = append(lines, "Notes:")
+		for _, line := range strings.Split(selected.Notes, "\n") {
+			lines = append(lines, wrap(board.CleanText(line))...)
+		}
 	}
 	return lines
 }
@@ -247,7 +317,9 @@ func (m model) viewFooter() string {
 		return statusStyle.Render(ansi.Truncate(m.status, m.width, "…"))
 	}
 	hints := "enter: save | esc: cancel"
-	if !m.adding {
+	if m.searching {
+		hints = "enter: search | esc: cancel"
+	} else if !m.adding {
 		var parts []string
 		for _, binding := range footerBindings() {
 			parts = append(parts, binding.Help().Key+": "+binding.Help().Desc)

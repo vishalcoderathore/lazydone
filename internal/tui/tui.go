@@ -2,6 +2,7 @@
 package tui
 
 import (
+	"errors"
 	"slices"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/vishalcoderathore/lazydone/internal/board"
+	"github.com/vishalcoderathore/lazydone/internal/capture"
 )
 
 // model holds all of the app's state.
@@ -19,7 +21,7 @@ type model struct {
 	version    string                // shown under the startup logo
 	tasks      board.Board           // the tasks in each column
 	active     int                   // index of the focused column
-	cursors    [board.NumColumns]int // index of the selected task in each column
+	cursors    [board.NumColumns]int // index of the selected task among each column's visible tasks
 	adding     bool                  // true while the text input is open
 	editing    string                // ID of the task being edited, or empty when adding
 	input      textinput.Model       // the text input
@@ -34,9 +36,18 @@ type model struct {
 	unsaved    []action              // changes shown but not yet saved, because saving failed
 	seen       time.Time             // when the data file last changed, as last checked
 	watching   bool                  // whether to check the data file for outside changes
-	width      int                   // terminal width
-	height     int                   // terminal height
-	now        func() time.Time      // the clock, replaceable in tests
+
+	today     bool             // true in the Today view
+	tag       string           // only tasks with this tag are shown, unless empty
+	archive   bool             // true while showing archived tasks instead of the board
+	sortBy    board.Sort       // the order each column is shown in
+	query     string           // the last search, for n and N
+	searching bool             // true while the search input is open
+	picking   bool             // true while the tag picker is open
+	pick      int              // the chosen row of the tag picker; 0 is All tags
+	width     int              // terminal width
+	height    int              // terminal height
+	now       func() time.Time // the clock, replaceable in tests
 
 	animate     bool       // whether effects are switched on
 	ticking     bool       // true while animation frames are scheduled
@@ -130,6 +141,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.help {
 			return m.updateHelp(msg)
 		}
+		if m.picking {
+			return m.updatePicker(msg)
+		}
+		if m.searching {
+			return m.updateSearch(msg)
+		}
 		if m.adding {
 			updated, input := m.updateAdding(msg)
 			next, animation := updated.startAnimation()
@@ -137,7 +154,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m.updateBoard(msg)
 	default:
-		if m.adding { // such as the clipboard text that ctrl+v asked for
+		if m.adding || m.searching { // such as the clipboard text that ctrl+v asked for
 			var cmd tea.Cmd
 			m.input, cmd = m.input.Update(msg)
 			return m, cmd
@@ -159,6 +176,11 @@ func (m model) updateBoard(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	repeated := m.pending == pressed
 	m.pending = ""
+
+	if m.editsArchived(k) {
+		m.status = "Archived tasks can't be changed. Press A to restore one, or z to go back"
+		return m, nil
+	}
 
 	switch {
 	case key.Matches(k, keys.Quit):
@@ -193,7 +215,7 @@ func (m model) updateBoard(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.pending = pressed
 		}
 	case key.Matches(k, keys.LastTask):
-		m.cursors[m.active] = max(len(m.tasks[m.active])-1, 0)
+		m.cursors[m.active] = max(len(m.visible(m.active))-1, 0)
 	case key.Matches(k, keys.HalfPageDown):
 		m = m.moveCursor(m.columnRows() / 2)
 	case key.Matches(k, keys.HalfPageUp):
@@ -205,17 +227,16 @@ func (m model) updateBoard(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(k, keys.Add):
 		m.adding = true
 	case key.Matches(k, keys.Edit):
-		if tasks := m.tasks[m.active]; len(tasks) > 0 {
+		if selected, ok := m.selected(); ok {
 			// Remember the task, not its place, because a refresh may move it.
-			selected := tasks[m.cursors[m.active]]
 			m.adding, m.editing = true, selected.ID
-			m.input.SetValue(selected.Text)
+			m.input.SetValue(capture.Format(selected.Text, selected.Tags, selected.Due))
 			m.input.CursorEnd()
 		}
 	case key.Matches(k, keys.Delete):
 		if repeated {
 			m = m.deleteSelected()
-		} else if len(m.tasks[m.active]) > 0 {
+		} else if _, ok := m.selected(); ok {
 			m.pending = pressed
 			m.status = "Press d again to delete"
 		}
@@ -239,6 +260,22 @@ func (m model) updateBoard(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m = m.moveSelected(m.active - 1)
 	case key.Matches(k, keys.MoveRight):
 		m = m.moveSelected(m.active + 1)
+	case key.Matches(k, keys.Today):
+		m = m.toggleToday()
+	case key.Matches(k, keys.Filter):
+		m = m.openPicker()
+	case key.Matches(k, keys.Sort):
+		m = m.cycleSort()
+	case key.Matches(k, keys.Archive):
+		m = m.archiveSelected()
+	case key.Matches(k, keys.Archived):
+		m = m.toggleArchive()
+	case key.Matches(k, keys.Search):
+		m = m.openSearch()
+	case key.Matches(k, keys.NextMatch):
+		m = m.jumpToMatch(1, false)
+	case key.Matches(k, keys.PreviousMatch):
+		m = m.jumpToMatch(-1, false)
 	}
 	return m.startAnimation()
 }
@@ -260,7 +297,7 @@ func (m model) updateHelp(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 // moveCursor moves the selection by a number of tasks, stopping at the ends of
 // the column.
 func (m model) moveCursor(by int) model {
-	last := max(len(m.tasks[m.active])-1, 0)
+	last := max(len(m.visible(m.active))-1, 0)
 	m.cursors[m.active] = max(0, min(m.cursors[m.active]+by, last))
 	return m
 }
@@ -270,15 +307,26 @@ func (m model) columnRows() int {
 	return m.height - detailsHeight - footerHeight - 2
 }
 
-// updateAdding handles keys while the text input is open.
+// updateAdding handles keys while the text input is open. Enter reads tags and
+// a due date out of the text. If they can't be read, the input stays open with
+// the reason, so that nothing typed is lost.
 func (m model) updateAdding(key tea.KeyMsg) (model, tea.Cmd) {
 	var cmd tea.Cmd
+	m.status = ""
 	switch key.Type {
 	case tea.KeyEnter:
+		fields, err := capture.Parse(m.input.Value(), m.now())
+		if errors.Is(err, capture.ErrNoText) && board.CleanText(m.input.Value()) == "" {
+			err = nil // blank input adds nothing, and an edit keeps the task as it was
+		}
+		if err != nil {
+			m.status = err.Error()
+			return m, nil
+		}
 		if m.editing != "" {
-			m = m.editTask(m.editing, m.input.Value())
+			m = m.editTask(m.editing, fields)
 		} else {
-			m = m.addTask(m.input.Value())
+			m = m.addTask(fields)
 		}
 		m = m.closeInput()
 	case tea.KeyEsc:
@@ -295,23 +343,6 @@ func (m model) closeInput() model {
 	return m
 }
 
-// selectedID is the ID of the selected task, or empty if there is none. The
-// cursor may be past the end just after a change has removed a task.
-func (m model) selectedID() string {
-	if tasks, cursor := m.tasks[m.active], m.cursors[m.active]; cursor < len(tasks) {
-		return tasks[cursor].ID
-	}
-	return ""
-}
-
-// selectTask focuses the column holding a task and puts the cursor on it.
-func (m model) selectTask(id string) model {
-	if column, index, ok := m.tasks.Find(id); ok {
-		m.active, m.cursors[column] = column, index
-	}
-	return m
-}
-
 // change makes an action on one task, if it applies to the board as shown, and
 // records how to undo it. The action is then saved to the latest board, which
 // may also hold changes from other processes.
@@ -325,23 +356,29 @@ func (m model) change(id string, op func(board.Board) (board.Board, bool)) (mode
 	}
 	m = m.remember(m.tasks.ChangeOf(id))
 	m.tasks = tasks
-	return m.persist(func(latest board.Board) board.Board {
+	m = m.persist(func(latest board.Board) board.Board {
 		next, _ := op(latest)
 		return next
-	}), true
+	})
+	// A sorted column may have moved the task, so follow it there. A task that
+	// was removed or is now hidden leaves the cursor where it was.
+	m, _ = m.selectTask(id)
+	return m, true
 }
 
 // editTask changes the text of a task and saves. Blank text keeps the task as
 // it was, because dd is the way to delete one. If another process removed the
 // task while it was being edited, a status says so, rather than the typed text
 // vanishing without a word.
-func (m model) editTask(id, text string) model {
+func (m model) editTask(id string, fields capture.Fields) model {
 	if _, _, ok := m.tasks.Find(id); !ok {
 		m.status = "That task was removed elsewhere"
 		return m
 	}
 	now := m.now()
-	m, ok := m.change(id, func(b board.Board) (board.Board, bool) { return b.Edit(id, text, now) })
+	m, ok := m.change(id, func(b board.Board) (board.Board, bool) {
+		return b.Edit(id, fields.Text, fields.Tags, fields.Due, now)
+	})
 	if ok {
 		m.status = "Task updated"
 	}
@@ -349,16 +386,19 @@ func (m model) editTask(id, text string) model {
 }
 
 // addTask adds a task to To Do, selects it and saves. Blank text is ignored.
-func (m model) addTask(text string) model {
-	text = board.CleanText(text)
-	if text == "" {
+func (m model) addTask(fields capture.Fields) model {
+	if fields.Text == "" {
 		return m
 	}
-	item := board.NewTask(text, m.now())
+	item := board.NewTask(fields.Text, m.now())
+	item.Tags, item.Due = fields.Tags, fields.Due
 	m, _ = m.change(item.ID, func(b board.Board) (board.Board, bool) { return b.Add(item), true })
-	m = m.selectTask(item.ID)
-	m.added = true
 	m.status = "Task added"
+	if m, shown := m.selectTask(item.ID); shown {
+		m.added = true
+		return m
+	}
+	m.status = "Task added. The current view hides it"
 	return m
 }
 
@@ -381,7 +421,7 @@ func (m model) moveSelected(target int) model {
 	if !ok {
 		return m
 	}
-	m = m.selectTask(id)
+	m, _ = m.selectTask(id)
 	if finished {
 		m = m.celebrate()
 	}
@@ -403,12 +443,22 @@ func (m model) cyclePriority() model {
 	return m
 }
 
-// reorderSelected moves the selected task up or down within its column and
-// saves. Moving past either end of the column does nothing.
+// reorderSelected swaps the selected task with the one shown above or below
+// it, and saves. Moving past either end of the column does nothing. Sorting
+// would hide the change, so it only works in manual order.
 func (m model) reorderSelected(by int) model {
-	id := m.selectedID()
-	m, _ = m.change(id, func(b board.Board) (board.Board, bool) { return b.Reorder(id, by) })
-	return m.selectTask(id)
+	if m.sortBy != board.ByManual {
+		m.status = "Reordering works in manual order. Press s until the board shows it"
+		return m
+	}
+	shown, target := m.visible(m.active), m.cursors[m.active]+by
+	if target < 0 || target >= len(shown) {
+		return m
+	}
+	id, other := m.selectedID(), shown[target].ID
+	m, _ = m.change(id, func(b board.Board) (board.Board, bool) { return b.Swap(id, other) })
+	m, _ = m.selectTask(id)
+	return m
 }
 
 const historySize = 50
@@ -432,7 +482,7 @@ func (m model) undo() model {
 
 	m.tasks = m.tasks.Revert(last)
 	m = m.persist(func(latest board.Board) board.Board { return latest.Revert(last) })
-	m = m.selectTask(last.ID)
+	m, _ = m.selectTask(last.ID)
 	m.status = "Change undone"
 	return m
 }
@@ -471,15 +521,18 @@ func (m model) refresh() model {
 }
 
 // show replaces the board on screen, keeping the selected task selected if it
-// is still in the same column, and every cursor on a task.
+// is still shown in the same column, and every cursor on a task.
 func (m model) show(tasks board.Board) model {
 	selected := m.selectedID()
 	m.tasks = tasks
-	for column, list := range m.tasks {
-		m.cursors[column] = max(0, min(m.cursors[column], len(list)-1))
-	}
-	if column, index, ok := m.tasks.Find(selected); ok && column == m.active {
-		m.cursors[column] = index
+	for column := range board.NumColumns {
+		shown := m.visible(column)
+		m.cursors[column] = max(0, min(m.cursors[column], len(shown)-1))
+		if column == m.active {
+			if index := slices.IndexFunc(shown, func(item board.Task) bool { return item.ID == selected }); index >= 0 {
+				m.cursors[column] = index
+			}
+		}
 	}
 	return m
 }

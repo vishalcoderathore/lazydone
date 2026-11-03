@@ -12,6 +12,8 @@ var keys = struct {
 	Add, Edit, Delete, Done, Priority, NextStage  key.Binding
 	MoveLeft, MoveRight, MoveDown, MoveUp         key.Binding
 	ScrollDown, ScrollUp, Undo, Retry, Help, Quit key.Binding
+	Today, Filter, Sort, Archive, Archived        key.Binding
+	Search, NextMatch, PreviousMatch              key.Binding
 }{
 	PreviousColumn: bind("h / ←", "previous column", "left", "h", "shift+tab"),
 	NextColumn:     bind("l / →", "next column", "right", "l", "tab"),
@@ -35,6 +37,14 @@ var keys = struct {
 	ScrollDown:     bind("Ctrl-e", "scroll details down", "ctrl+e"),
 	ScrollUp:       bind("Ctrl-y", "scroll details up", "ctrl+y"),
 	Undo:           bind("u", "undo", "u"),
+	Today:          bind("t", "Today view on / off", "t"),
+	Filter:         bind("f", "filter by tag", "f"),
+	Sort:           bind("s", "next sort order", "s"),
+	Archive:        bind("A", "archive / restore task", "A"),
+	Archived:       bind("z", "archived tasks on / off", "z"),
+	Search:         bind("/", "search", "/"),
+	NextMatch:      bind("n", "next match", "n"),
+	PreviousMatch:  bind("N", "previous match", "N"),
 	Retry:          bind("r", "retry save", "r"),
 	Help:           bind("?", "help", "?"),
 	Quit:           bind("q", "quit", "q"),
@@ -52,6 +62,7 @@ func helpBindings() []key.Binding {
 		k.NextTask, k.PreviousTask, k.FirstTask, k.LastTask, k.HalfPageDown, k.HalfPageUp,
 		k.Add, k.Edit, k.Delete, k.Done, k.Priority, k.NextStage,
 		k.MoveLeft, k.MoveRight, k.MoveDown, k.MoveUp,
+		k.Today, k.Filter, k.Sort, k.Archive, k.Archived, k.Search, k.NextMatch, k.PreviousMatch,
 		k.ScrollDown, k.ScrollUp, k.Undo, k.Retry, k.Help, k.Quit,
 	}
 }

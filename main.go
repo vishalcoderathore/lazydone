@@ -83,14 +83,17 @@ func run(args []string, stdout, stderr io.Writer, open opener) error {
 
 	root.AddCommand(&cobra.Command{
 		Use:   "add <task>",
-		Short: "Add a task to To Do, such as: add fix bug +work @home due:05-11-2026",
+		Short: "Add a task to To Do, such as: add fix bug +work @home due:fri",
 		Long: `Add a task to To Do.
 
-Words starting with + or @ followed by a letter become tags, and due:DD-MM-YYYY
-sets the due date. Both are taken out of the task's text.`,
+Words starting with + or @ followed by a letter become tags, and due: sets the
+due date. Both are taken out of the task's text. A due date can be today,
+tomorrow, a weekday such as fri (its next day after today), +3d, +2w or
+DD-MM-YYYY.`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fields, err := capture.Parse(strings.Join(args, " "))
+			now := time.Now()
+			fields, err := capture.Parse(strings.Join(args, " "), now)
 			if err != nil {
 				return err
 			}
@@ -98,7 +101,7 @@ sets the due date. Both are taken out of the task's text.`,
 			if err != nil {
 				return err
 			}
-			item := board.NewTask(fields.Text, time.Now())
+			item := board.NewTask(fields.Text, now)
 			item.Tags, item.Due = fields.Tags, fields.Due
 			if _, err := data.Update(func(b board.Board) board.Board { return b.Add(item) }); err != nil {
 				return err
@@ -118,7 +121,7 @@ sets the due date. Both are taken out of the task's text.`,
 			if err != nil {
 				return err
 			}
-			listed, err := list(data, statuses(cmd))
+			listed, err := list(data, statuses(cmd), today(cmd))
 			if err != nil {
 				return err
 			}
@@ -134,7 +137,7 @@ sets the due date. Both are taken out of the task's text.`,
 		},
 	}
 	ls.Flags().BoolVar(&asJSON, "json", false, "print the tasks as JSON")
-	addStatusFlags(ls)
+	addFilterFlags(ls)
 	root.AddCommand(ls)
 
 	count := &cobra.Command{
@@ -146,7 +149,7 @@ sets the due date. Both are taken out of the task's text.`,
 			if err != nil {
 				return err
 			}
-			listed, err := list(data, statuses(cmd))
+			listed, err := list(data, statuses(cmd), today(cmd))
 			if err != nil {
 				return err
 			}
@@ -154,7 +157,7 @@ sets the due date. Both are taken out of the task's text.`,
 			return err
 		},
 	}
-	addStatusFlags(count)
+	addFilterFlags(count)
 	root.AddCommand(count)
 
 	root.SetOut(stdout)
@@ -163,12 +166,19 @@ sets the due date. Both are taken out of the task's text.`,
 	return root.Execute()
 }
 
-// addStatusFlags gives a command one flag per status: --todo, --doing and
-// --done.
-func addStatusFlags(cmd *cobra.Command) {
+// addFilterFlags gives a command one flag per status, --todo, --doing and
+// --done, and --today.
+func addFilterFlags(cmd *cobra.Command) {
 	for _, status := range board.Statuses {
 		cmd.Flags().Bool(status, false, "include "+status+" tasks")
 	}
+	cmd.Flags().Bool("today", false, "include only open tasks due today or overdue, and tasks completed today")
+}
+
+// today reports whether a command's --today flag is set.
+func today(cmd *cobra.Command) bool {
+	on, _ := cmd.Flags().GetBool("today")
+	return on
 }
 
 // statuses reports which columns a command's status flags ask for. With no
@@ -193,20 +203,21 @@ type listedTask struct {
 	Status string `json:"status"`
 }
 
-// list returns the tasks in the wanted columns, in board order. Archived tasks
-// are left out.
-func list(data store.File, wanted [board.NumColumns]bool) ([]listedTask, error) {
+// list returns the tasks in the wanted columns, in board order, and only those
+// in the Today view if today is set. Archived tasks are left out.
+func list(data store.File, wanted [board.NumColumns]bool, today bool) ([]listedTask, error) {
 	tasks, err := data.Load()
 	if err != nil {
 		return nil, err
 	}
+	now := time.Now()
 	listed := []listedTask{}
 	for column, items := range tasks {
 		if !wanted[column] {
 			continue
 		}
 		for _, item := range items {
-			if !item.Archived {
+			if !item.Archived && (!today || board.InToday(column, item, now)) {
 				listed = append(listed, listedTask{item, column, board.Statuses[column]})
 			}
 		}
@@ -217,14 +228,11 @@ func list(data store.File, wanted [board.NumColumns]bool) ([]listedTask, error) 
 // describe writes a task on one line, in the same form that add accepts, such
 // as: [todo] fix bug +work due:05-11-2026 priority:high
 func describe(column int, item board.Task) string {
-	parts := append([]string{"[" + board.Statuses[column] + "]", item.Text}, item.Tags...)
-	if !item.Due.IsZero() {
-		parts = append(parts, "due:"+item.Due.Format(capture.DateLayout))
-	}
+	line := "[" + board.Statuses[column] + "] " + capture.Format(item.Text, item.Tags, item.Due)
 	if item.Priority != "" {
-		parts = append(parts, "priority:"+item.Priority)
+		line += " priority:" + item.Priority
 	}
-	return strings.Join(parts, " ")
+	return line
 }
 
 func writeJSON(w io.Writer, value any) error {

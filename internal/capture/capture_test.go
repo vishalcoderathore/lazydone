@@ -1,10 +1,17 @@
 package capture
 
 import (
+	"errors"
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/vishalcoderathore/lazydone/internal/due"
 )
+
+// now is a Tuesday.
+var now = time.Date(2026, 11, 3, 15, 0, 0, 0, time.UTC)
 
 func TestParse(t *testing.T) {
 	cases := []struct {
@@ -27,10 +34,13 @@ func TestParse(t *testing.T) {
 		{"+-dash", "+-dash", nil, ""},
 		{"  spaced \t out\nlines  ", "spaced out lines", nil, ""},
 		{"Due:05-11-2026 is text", "Due:05-11-2026 is text", nil, ""},
+		{"pay rent due:fri", "pay rent", nil, "06-11-2026"},
+		{"due:tomorrow call", "call", nil, "04-11-2026"},
+		{"review due:+2w", "review", nil, "17-11-2026"},
 	}
 	for _, c := range cases {
 		t.Run(c.input, func(t *testing.T) {
-			got, err := Parse(c.input)
+			got, err := Parse(c.input, now)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -40,15 +50,15 @@ func TestParse(t *testing.T) {
 			if !slices.Equal(got.Tags, c.tags) {
 				t.Errorf("tags = %q, want %q", got.Tags, c.tags)
 			}
-			due := ""
+			gotDue := ""
 			if !got.Due.IsZero() {
-				due = got.Due.Format(DateLayout)
+				gotDue = got.Due.Format(due.Layout)
 				if h, m, s := got.Due.Clock(); h != 0 || m != 0 || s != 0 {
 					t.Errorf("due = %v, want midnight", got.Due)
 				}
 			}
-			if due != c.due {
-				t.Errorf("due = %q, want %q", due, c.due)
+			if gotDue != c.due {
+				t.Errorf("due = %q, want %q", gotDue, c.due)
 			}
 		})
 	}
@@ -60,7 +70,7 @@ func TestParseRejects(t *testing.T) {
 		"   ":                               "needs some text",
 		"+work @home":                       "needs some text",
 		"due:05-11-2026":                    "needs some text",
-		"pay due:fri":                       `"fri" must be a date in DD-MM-YYYY form`,
+		"pay due:someday":                   `"someday" isn't one I know`,
 		"pay due:2026-11-05":                "DD-MM-YYYY",
 		"pay due:11/05/2026":                "DD-MM-YYYY",
 		"pay due:31-02-2026":                "DD-MM-YYYY",
@@ -70,11 +80,36 @@ func TestParseRejects(t *testing.T) {
 	}
 	for input, message := range cases {
 		t.Run(input, func(t *testing.T) {
-			_, err := Parse(input)
+			_, err := Parse(input, now)
 			if err == nil || !strings.Contains(err.Error(), message) {
 				t.Errorf("err = %v, want one mentioning %q", err, message)
 			}
+			if strings.Contains(message, "needs some text") && !errors.Is(err, ErrNoText) {
+				t.Errorf("err = %v, want ErrNoText", err)
+			}
 		})
+	}
+}
+
+func TestFormatIsReadBackTheSame(t *testing.T) {
+	date := time.Date(2026, 11, 5, 0, 0, 0, 0, time.UTC)
+	for _, c := range []struct {
+		text string
+		tags []string
+		due  time.Time
+		want string
+	}{
+		{"fix bug", nil, time.Time{}, "fix bug"},
+		{"fix bug", []string{"+work", "@home"}, date, "fix bug +work @home due:05-11-2026"},
+	} {
+		got := Format(c.text, c.tags, c.due)
+		if got != c.want {
+			t.Errorf("Format = %q, want %q", got, c.want)
+		}
+		back, err := Parse(got, now)
+		if err != nil || back.Text != c.text || !slices.Equal(back.Tags, c.tags) || !back.Due.Equal(c.due) {
+			t.Errorf("Parse(%q) = %+v, %v", got, back, err)
+		}
 	}
 }
 
@@ -85,9 +120,12 @@ func FuzzParse(f *testing.F) {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, input string) {
-		got, err := Parse(input)
+		got, err := Parse(input, now)
 		if err != nil {
 			return
+		}
+		if back, err := Parse(Format(got.Text, got.Tags, got.Due), now); err != nil || back.Text != got.Text {
+			t.Fatalf("Format of %+v reads back as %+v, %v", got, back, err)
 		}
 		if got.Text == "" {
 			t.Fatal("no error, but empty text")

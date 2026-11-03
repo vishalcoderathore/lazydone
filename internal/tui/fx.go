@@ -206,11 +206,25 @@ func overlayLine(line string, glyphs map[int]string, width int) string {
 
 // doneFraction is the share of all tasks that are completed.
 func (m model) doneFraction() float64 {
-	total := m.tasks.Total()
+	done, total := m.progress()
 	if total == 0 {
 		return 0
 	}
-	return float64(len(m.tasks[board.Completed])) / float64(total)
+	return float64(done) / float64(total)
+}
+
+// progress counts the completed tasks and all tasks on the board. Archived
+// tasks are put away, so they don't count.
+func (m model) progress() (done, total int) {
+	for column, list := range m.tasks {
+		for _, item := range list {
+			if !item.Archived {
+				total++
+				done += boolInt(column == board.Completed)
+			}
+		}
+	}
+	return done, total
 }
 
 // barMoving reports whether the progress bar is still catching up with the
@@ -221,7 +235,7 @@ func (m model) barMoving() bool {
 
 // viewProgress draws the progress bar and count, or nothing on an empty board.
 func (m model) viewProgress() string {
-	total := m.tasks.Total()
+	done, total := m.progress()
 	if total == 0 {
 		return ""
 	}
@@ -245,7 +259,7 @@ func (m model) viewProgress() string {
 	}
 	bar.WriteString(faintStyle.Render(strings.Repeat("░", barWidth-used)))
 
-	count := fmt.Sprintf("%d/%d done", len(m.tasks[board.Completed]), total)
+	count := fmt.Sprintf("%d/%d done", done, total)
 	return " " + bar.String() + " " + lipgloss.NewStyle().Foreground(colorTeal).Bold(true).Render(count) + " "
 }
 

@@ -15,6 +15,7 @@ import (
 
 	"github.com/vishalcoderathore/lazydone/internal/board"
 	"github.com/vishalcoderathore/lazydone/internal/boardtest"
+	"github.com/vishalcoderathore/lazydone/internal/due"
 	"github.com/vishalcoderathore/lazydone/internal/store"
 )
 
@@ -416,7 +417,7 @@ func TestAddRejectsBadInputWithoutWriting(t *testing.T) {
 	for name, args := range map[string][]string{
 		"no arguments":   {"add"},
 		"only tags":      {"add", "+work", "@home"},
-		"weekday due":    {"add", "pay", "due:fri"},
+		"unknown due":    {"add", "pay", "due:someday"},
 		"ISO due date":   {"add", "pay", "due:2026-11-05"},
 		"impossible day": {"add", "pay", "due:31-02-2026"},
 	} {
@@ -580,5 +581,71 @@ func TestConcurrentAddsFromManyProcessesLoseNothing(t *testing.T) {
 	}
 	if n := len(got[board.ToDo]); n != processes*each {
 		t.Errorf("%d tasks saved, want %d", n, processes*each)
+	}
+}
+
+func TestAddReadsNaturalDueDates(t *testing.T) {
+	path := useDataHome(t)
+
+	if result := runCLI(t, "add", "pay", "rent", "due:fri"); result.err != nil {
+		t.Fatalf("run: %v", result.err)
+	}
+	got, err := loadBoard(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := due.Parse("fri", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if added := got[board.ToDo][0]; !added.Due.Equal(want) {
+		t.Errorf("due = %v, want %v", added.Due, want)
+	}
+}
+
+// todayBoard has tasks on either side of today's boundaries.
+func todayBoard() board.Board {
+	today := due.Day(time.Now())
+	return board.Board{
+		board.ToDo: {
+			{ID: "late", Text: "late", Due: today.AddDate(0, 0, -2)},
+			{ID: "soon", Text: "soon", Due: today.AddDate(0, 0, 1)},
+			{ID: "none", Text: "none"},
+		},
+		board.InProgress: {{ID: "now", Text: "now", Due: today}},
+		board.Completed: {
+			{ID: "fresh", Text: "fresh", Completed: time.Now()},
+			{ID: "stale", Text: "stale", Completed: today.Add(-time.Hour), Due: today},
+			{ID: "put away", Text: "put away", Completed: time.Now(), Archived: true},
+		},
+	}
+}
+
+func TestTodayFlagMatchesTheTodayView(t *testing.T) {
+	seed(t, todayBoard())
+	cases := map[string]struct{ ls, count string }{
+		"ls --today":                {"late\nnow\nfresh\n", "3\n"},
+		"ls --today --todo --doing": {"late\nnow\n", "2\n"},
+		"ls --today --done":         {"fresh\n", "1\n"},
+	}
+	for args, want := range cases {
+		t.Run(args, func(t *testing.T) {
+			result := runCLI(t, strings.Fields(args)...)
+			if result.err != nil {
+				t.Fatalf("run: %v", result.err)
+			}
+			var texts []string
+			for _, line := range strings.Split(strings.TrimSpace(result.stdout), "\n") {
+				fields := strings.Fields(line)
+				texts = append(texts, fields[1])
+			}
+			if got := strings.Join(texts, "\n") + "\n"; got != want.ls {
+				t.Errorf("ls gave %q, want %q", got, want.ls)
+			}
+			countArgs := append([]string{"count"}, strings.Fields(args)[1:]...)
+			if got := runCLI(t, countArgs...); got.stdout != want.count {
+				t.Errorf("count gave %q, want %q", got.stdout, want.count)
+			}
+		})
 	}
 }

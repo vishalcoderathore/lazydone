@@ -96,14 +96,38 @@ func (b Board) update(id string, change func(*Task)) (Board, bool) {
 	return b, true
 }
 
-// Edit changes the text of a task. Blank or unchanged text keeps the task as it
-// was and returns false, because Delete is the way to remove a task.
-func (b Board) Edit(id, text string, now time.Time) (Board, bool) {
+// Edit changes the text, tags and due date of a task. Blank text keeps the
+// task as it was and returns false, because Delete is the way to remove a
+// task, as does an edit that changes nothing.
+func (b Board) Edit(id, text string, tags []string, due time.Time, now time.Time) (Board, bool) {
 	text = CleanText(text)
-	if column, index, ok := b.Find(id); !ok || text == "" || text == b[column][index].Text {
+	column, index, ok := b.Find(id)
+	if !ok || text == "" {
 		return b, false
 	}
-	return b.update(id, func(item *Task) { item.Text, item.Updated = text, now })
+	if old := b[column][index]; text == old.Text && slices.Equal(tags, old.Tags) && due.Equal(old.Due) {
+		return b, false
+	}
+	return b.update(id, func(item *Task) {
+		item.Text, item.Tags, item.Due, item.Updated = text, slices.Clone(tags), due, now
+	})
+}
+
+// Archive hides a completed task from the board, keeping it in the file. A task
+// in another column can't be archived and returns false.
+func (b Board) Archive(id string, now time.Time) (Board, bool) {
+	if column, index, ok := b.Find(id); !ok || column != Completed || b[column][index].Archived {
+		return b, false
+	}
+	return b.update(id, func(item *Task) { item.Archived, item.Updated = true, now })
+}
+
+// Restore puts an archived task back on the board.
+func (b Board) Restore(id string, now time.Time) (Board, bool) {
+	if column, index, ok := b.Find(id); !ok || !b[column][index].Archived {
+		return b, false
+	}
+	return b.update(id, func(item *Task) { item.Archived, item.Updated = false, now })
 }
 
 // Delete removes a task.
@@ -144,16 +168,16 @@ func (b Board) CyclePriority(id string, now time.Time) (Board, bool) {
 	})
 }
 
-// Reorder moves a task up (negative) or down (positive) within its column,
-// which changes its manual order. Moving past either end returns false.
-func (b Board) Reorder(id string, by int) (Board, bool) {
-	column, index, ok := b.Find(id)
-	target := index + by
-	if !ok || target < 0 || target >= len(b[column]) {
+// Swap exchanges the places of two tasks in the same column, which changes
+// their manual order. Tasks in different columns, or missing, return false.
+func (b Board) Swap(first, second string) (Board, bool) {
+	column, i, ok := b.Find(first)
+	other, j, found := b.Find(second)
+	if !ok || !found || column != other || i == j {
 		return b, false
 	}
 	b[column] = slices.Clone(b[column])
-	b[column][index], b[column][target] = b[column][target], b[column][index]
+	b[column][i], b[column][j] = b[column][j], b[column][i]
 	return b, true
 }
 
@@ -190,4 +214,86 @@ func (b Board) Revert(c Change) Board {
 	index := min(c.Index, len(b[c.Column]))
 	b[c.Column] = slices.Insert(slices.Clone(b[c.Column]), index, *c.Before)
 	return b
+}
+
+// dayNumber numbers the day that t falls on in its own time zone, so that
+// days can be compared.
+func dayNumber(t time.Time) int {
+	year, month, day := t.Date()
+	return int(time.Date(year, month, day, 12, 0, 0, 0, time.UTC).Unix() / 86400)
+}
+
+// A due date is a calendar day, saved as midnight in the zone it was entered
+// in. So its day is read in that zone, and stays the same day when the clock's
+// zone changes, as when travelling. A completed time is a moment, so its day is
+// read in now's zone.
+
+// Overdue reports whether a task in a column was due before today. A
+// completed task is never overdue.
+func Overdue(column int, item Task, now time.Time) bool {
+	return column != Completed && !item.Due.IsZero() && dayNumber(item.Due) < dayNumber(now)
+}
+
+// DueToday reports whether an open task is due today.
+func DueToday(column int, item Task, now time.Time) bool {
+	return column != Completed && !item.Due.IsZero() && dayNumber(item.Due) == dayNumber(now)
+}
+
+// InToday reports whether a task in a column belongs in the Today view: an
+// open task due today or overdue, or a task completed today.
+func InToday(column int, item Task, now time.Time) bool {
+	if column == Completed {
+		return !item.Completed.IsZero() && dayNumber(item.Completed.In(now.Location())) == dayNumber(now)
+	}
+	return DueToday(column, item, now) || Overdue(column, item, now)
+}
+
+// Sort is an order for showing the tasks of a column.
+type Sort int
+
+// The sort orders, in the order that the TUI steps through them.
+const (
+	ByManual   Sort = iota // the order the user arranged
+	ByPriority             // high first, then medium, low and none
+	ByDue                  // earliest due date first, then tasks with none
+	ByCreated              // newest first
+	numSorts
+)
+
+var sortNames = [numSorts]string{"manual order", "priority", "due date", "creation date"}
+
+func (s Sort) String() string { return sortNames[s] }
+
+// Next is the sort order after this one, wrapping back to manual order.
+func (s Sort) Next() Sort { return (s + 1) % numSorts }
+
+// Sorted returns a copy of tasks in the given order. Ties keep their manual
+// order, and the manual order itself is never changed.
+func Sorted(tasks []Task, by Sort) []Task {
+	sorted := slices.Clone(tasks)
+	switch by {
+	case ByPriority:
+		slices.SortStableFunc(sorted, func(a, b Task) int {
+			return slices.Index(Priorities, b.Priority) - slices.Index(Priorities, a.Priority)
+		})
+	case ByDue:
+		slices.SortStableFunc(sorted, func(a, b Task) int {
+			switch {
+			case a.Due.IsZero() || b.Due.IsZero():
+				return boolInt(a.Due.IsZero()) - boolInt(b.Due.IsZero())
+			default:
+				return a.Due.Compare(b.Due)
+			}
+		})
+	case ByCreated:
+		slices.SortStableFunc(sorted, func(a, b Task) int { return b.Created.Compare(a.Created) })
+	}
+	return sorted
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
