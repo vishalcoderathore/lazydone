@@ -141,7 +141,7 @@ func (m model) archiveSelected() model {
 // editsArchived reports whether a key would change an archived task in a way
 // that only makes sense on the board, which the archive view doesn't allow.
 func (m model) editsArchived(k tea.KeyMsg) bool {
-	return m.archive && key.Matches(k, keys.Add, keys.Edit, keys.Done, keys.Priority, keys.NextStage,
+	return m.archive && key.Matches(k, keys.Add, keys.Edit, keys.EditNotes, keys.Done, keys.Priority, keys.NextStage,
 		keys.MoveLeft, keys.MoveRight, keys.MoveDown, keys.MoveUp)
 }
 

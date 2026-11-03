@@ -113,6 +113,18 @@ func (b Board) Edit(id, text string, tags []string, due time.Time, now time.Time
 	})
 }
 
+// EditNotes replaces the notes of a task. Trailing spaces and blank lines are
+// dropped, as an editor adds them. Notes that come out the same as before
+// change nothing and return false.
+func (b Board) EditNotes(id, notes string, now time.Time) (Board, bool) {
+	notes = strings.TrimRightFunc(notes, unicode.IsSpace)
+	column, index, ok := b.Find(id)
+	if !ok || notes == b[column][index].Notes {
+		return b, false
+	}
+	return b.update(id, func(item *Task) { item.Notes, item.Updated = notes, now })
+}
+
 // Archive hides a completed task from the board, keeping it in the file. A task
 // in another column can't be archived and returns false.
 func (b Board) Archive(id string, now time.Time) (Board, bool) {

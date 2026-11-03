@@ -70,6 +70,7 @@ Press `?` in the app to see every key.
 | `Ctrl-d` / `Ctrl-u` | Move half a page down or up |
 | `a` or `4` | Add a task |
 | `e` | Edit a task |
+| `E` | Edit a task's notes in your editor: `$VISUAL`, then `$EDITOR`, then `vi` |
 | `dd` | Delete a task |
 | `u` | Undo, up to the last 50 changes in this session |
 | `x` | Mark a task done, or move it from Completed back to To Do |
