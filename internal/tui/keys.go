@@ -10,7 +10,7 @@ var keys = struct {
 	NextTask, PreviousTask, FirstTask, LastTask   key.Binding
 	HalfPageDown, HalfPageUp                      key.Binding
 	Add, Edit, EditNotes, Delete, Done, Priority  key.Binding
-	NextStage                                     key.Binding
+	NextStage, Read                               key.Binding
 	MoveLeft, MoveRight, MoveDown, MoveUp         key.Binding
 	ScrollDown, ScrollUp, Undo, Retry, Help, Quit key.Binding
 	Today, Filter, Sort, Archive, Archived        key.Binding
@@ -28,6 +28,7 @@ var keys = struct {
 	Add:            bind("a / 4", "add", "a", "4"),
 	Edit:           bind("e", "edit", "e"),
 	EditNotes:      bind("E", "edit notes in $EDITOR", "E"),
+	Read:           bind("enter", "show the whole task", "enter"),
 	Delete:         bind("dd", "delete", "d"),
 	Done:           bind("x", "done", "x"),
 	Priority:       bind("p", "priority", "p"),
@@ -62,7 +63,7 @@ func helpBindings() []key.Binding {
 	return []key.Binding{
 		k.PreviousColumn, k.NextColumn, k.JumpToColumn,
 		k.NextTask, k.PreviousTask, k.FirstTask, k.LastTask, k.HalfPageDown, k.HalfPageUp,
-		k.Add, k.Edit, k.EditNotes, k.Delete, k.Done, k.Priority, k.NextStage,
+		k.Read, k.Add, k.Edit, k.EditNotes, k.Delete, k.Done, k.Priority, k.NextStage,
 		k.MoveLeft, k.MoveRight, k.MoveDown, k.MoveUp,
 		k.Today, k.Filter, k.Sort, k.Archive, k.Archived, k.Search, k.NextMatch, k.PreviousMatch,
 		k.ScrollDown, k.ScrollUp, k.Undo, k.Retry, k.Help, k.Quit,

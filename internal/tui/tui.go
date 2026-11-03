@@ -37,19 +37,22 @@ type model struct {
 	seen       time.Time             // when the data file last changed, as last checked
 	watching   bool                  // whether to check the data file for outside changes
 
-	today     bool                           // true in the Today view
-	tag       string                         // only tasks with this tag are shown, unless empty
-	archive   bool                           // true while showing archived tasks instead of the board
-	sortBy    board.Sort                     // the order each column is shown in
-	query     string                         // the last search, for n and N
-	searching bool                           // true while the search popup is open
-	found     int                            // the chosen row of the search popup's matches
-	picking   bool                           // true while the tag picker is open
-	pick      int                            // the chosen row of the tag picker; 0 is All tags
-	width     int                            // terminal width
-	height    int                            // terminal height
-	now       func() time.Time               // the clock, replaceable in tests
-	editor    func(id, notes string) tea.Cmd // opens a task's notes in the user's editor, replaceable in tests
+	today      bool                           // true in the Today view
+	tag        string                         // only tasks with this tag are shown, unless empty
+	archive    bool                           // true while showing archived tasks instead of the board
+	sortBy     board.Sort                     // the order each column is shown in
+	query      string                         // the last search, for n and N
+	searching  bool                           // true while the search popup is open
+	found      int                            // the chosen row of the search popup's matches
+	picking    bool                           // true while the tag picker is open
+	reading    bool                           // true while the selected task is shown in full
+	readID     string                         // the task shown in full, as a refresh may move it
+	readScroll int                            // the first line of the whole task that is shown
+	pick       int                            // the chosen row of the tag picker; 0 is All tags
+	width      int                            // terminal width
+	height     int                            // terminal height
+	now        func() time.Time               // the clock, replaceable in tests
+	editor     func(id, notes string) tea.Cmd // opens a task's notes in the user's editor, replaceable in tests
 
 	animate     bool       // whether effects are switched on
 	ticking     bool       // true while animation frames are scheduled
@@ -129,9 +132,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case animTick:
 		return m.stepAnimation()
 	case notesEdited:
-		return m.saveNotes(msg), nil
+		return m.saveNotes(msg).keepReading(), nil
 	case fileCheck:
-		m = m.refresh()
+		m = m.refresh().keepReading()
 		if m.watching {
 			return m, watch()
 		}
@@ -150,6 +153,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.searching {
 			return m.updateSearch(msg)
+		}
+		if m.reading {
+			return m.updateReading(msg)
 		}
 		if m.adding {
 			updated, input := m.updateAdding(msg)
@@ -236,6 +242,10 @@ func (m model) updateBoard(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.adding, m.editing = true, selected.ID
 			m.input.SetValue(capture.Format(selected.Text, selected.Tags, selected.Due))
 			m.input.CursorEnd()
+		}
+	case key.Matches(k, keys.Read):
+		if selected, ok := m.selected(); ok {
+			m.reading, m.readID, m.readScroll = true, selected.ID, 0
 		}
 	case key.Matches(k, keys.EditNotes):
 		if selected, ok := m.selected(); ok {

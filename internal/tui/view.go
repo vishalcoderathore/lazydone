@@ -127,6 +127,9 @@ func (m model) View() string {
 	if m.searching {
 		return m.viewSearch()
 	}
+	if m.reading {
+		return m.viewTask()
+	}
 
 	view := lipgloss.JoinVertical(lipgloss.Left, m.viewColumns(), m.withProgress(m.viewDetails()), m.viewFooter())
 	return overlayParticles(view, m.particles, m.width)
@@ -255,7 +258,7 @@ func (m model) viewDetails() string {
 	}
 	last := min(m.scroll+detailsRows, len(lines))
 	if len(lines) > detailsRows {
-		title += fmt.Sprintf(" %d-%d of %d", m.scroll+1, last, len(lines))
+		title += fmt.Sprintf(" %d-%d of %d · enter: show all", m.scroll+1, last, len(lines))
 	}
 	return panel(title, "", styled(slices.Clone(lines[m.scroll:last])), m.width, detailsHeight, false, border)
 }
@@ -263,6 +266,13 @@ func (m model) viewDetails() string {
 // detailsLines is everything that the details panel has to show about the
 // selected task, wrapped to fit. It's empty if no task is selected.
 func (m model) detailsLines() []string {
+	return m.taskLines(m.width - 2)
+}
+
+// taskLines is everything about the selected task, wrapped to a width: its
+// priority, due date and tags, its text, then its notes. It's empty if no task
+// is selected.
+func (m model) taskLines(width int) []string {
 	selected, ok := m.selected()
 	if !ok {
 		return nil
@@ -285,7 +295,7 @@ func (m model) detailsLines() []string {
 	if len(selected.Tags) > 0 {
 		facts = append(facts, "Tags: "+strings.Join(selected.Tags, " "))
 	}
-	wrap := func(text string) []string { return strings.Split(ansi.Wrap(text, m.width-2, ""), "\n") }
+	wrap := func(text string) []string { return strings.Split(ansi.Wrap(text, width, ""), "\n") }
 	var lines []string
 	if len(facts) > 0 {
 		lines = wrap(strings.Join(facts, " · "))

@@ -71,6 +71,7 @@ Press `?` in the app to see every key.
 | `a` or `4` | Add a task |
 | `e` | Edit a task |
 | `E` | Edit a task's notes in your editor: `$VISUAL`, then `$EDITOR`, then `vi` |
+| `Enter` | Show the whole task, notes and all, in a popup: `j` / `k` scroll, `E` edits the notes, `Esc` closes |
 | `dd` | Delete a task |
 | `u` | Undo, up to the last 50 changes in this session |
 | `x` | Mark a task done, or move it from Completed back to To Do |
